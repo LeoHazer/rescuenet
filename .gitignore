@@ -1,0 +1,24 @@
+# Android
+apps/android/.gradle/
+apps/android/.idea/
+apps/android/local.properties
+apps/android/*/build/
+apps/android/.cxx/
+
+# Go
+apps/backend/bin/
+*.exe
+
+# Node / Svelte
+apps/dashboard/node_modules/
+apps/dashboard/.svelte-kit/
+apps/dashboard/dist/
+
+# Ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Sistema
+.DS_Store
+Thumbs.db
