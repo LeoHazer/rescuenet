@@ -2,7 +2,7 @@
 
 Sistema distribuído para monitoramento e coordenação de equipes de resgate em cenários de desastre, com app Android, MQTT, mapa em tempo real e eleição de líder (Algoritmo Bully).
 
-Trabalho final de Sistemas Distribuídos.
+Trabalho final de Sistemas Distribuídos — UFF Rio das Ostras.
 
 ## Estrutura
 - `apps/android` — aplicativo Android (Kotlin + Compose)
@@ -13,3 +13,4 @@ Trabalho final de Sistemas Distribuídos.
 - `brand` — identidade visual
 
 ## Como rodar
+*(preenchido a partir da Sprint 1)*
