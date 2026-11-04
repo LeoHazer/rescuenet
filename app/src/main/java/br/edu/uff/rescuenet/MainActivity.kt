@@ -1,12 +1,10 @@
 package br.edu.uff.rescuenet
 
-
-
-
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,149 +13,98 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModelProvider
+import br.edu.uff.rescuenet.presentation.viewmodel.RescueNetViewModel
 import br.edu.uff.rescuenet.ui.theme.RescueNetTheme
 
+//Estes imports permitem que os componentes fiquem visíveis em telas menores
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.remember
+
+
+// Identidade visual do RescueNet
 private val RescueBlue = Color(0xFF2563EB)
-private val RescueRed = Color(0xFFE5484D)
-private val RescueGreen = Color(0xFF16A34A)
-private val RescueAmber = Color(0xFFF59E0B)
-private val BackgroundColor = Color(0xFFF9FAFB)
-private val MainText = Color(0xFF111827)
-private val SecondaryText = Color(0xFF4B5563)
+private val EmergencyRed = Color(0xFFE5484D)
+private val OnlineGreen = Color(0xFF16A34A)
+private val AttentionAmber = Color(0xFFF59E0B)
+private val BackgroundColor = Color(0xFFFFFFFF)
+private val SurfaceColor = Color(0xFFF9FAFB)
+private val MainTextColor = Color(0xFF111827)
+private val SecondaryTextColor = Color(0xFF4B5563)
 
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        val viewModel = ViewModelProvider(this)[
+            RescueNetViewModel::class.java
+        ]
+
         setContent {
             RescueNetTheme {
-                RescueNetScreen()
+                RescueNetScreen(viewModel = viewModel)
             }
         }
     }
 }
 
 @Composable
-fun RescueNetScreen() {
-    var operationalStatus by remember { mutableStateOf("Em operação") }
-    var selectedAction by remember { mutableStateOf("") }
-    var emergencyActivated by remember { mutableStateOf(false) }
+fun RescueNetScreen(viewModel: RescueNetViewModel) {
+    val uiState by viewModel.uiState.collectAsState()
 
     Scaffold(
-        modifier = Modifier.fillMaxSize(),
         containerColor = BackgroundColor
     ) { innerPadding ->
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .background(BackgroundColor)
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 24.dp)
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
 
             // Cabeçalho
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "RescueNet",
-                        fontSize = 27.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = RescueBlue
-                    )
-
-                    Text(
-                        text = "MONITORAMENTO DE EQUIPES",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = SecondaryText,
-                        letterSpacing = 1.2.sp
-                    )
-                }
-
-                StatusBadge(
-                    text = "SISTEMA DEMO",
-                    color = RescueAmber
-                )
-            }
-
-            Spacer(modifier = Modifier.height(28.dp))
-
-            // Identificação da equipe
-            Text(
-                text = "Minha equipe",
-                fontSize = 14.sp,
-                color = SecondaryText
-            )
-
-            Spacer(modifier = Modifier.height(5.dp))
-
-            Text(
-                text = "Equipe #001",
-                fontSize = 25.sp,
-                fontWeight = FontWeight.Bold,
-                color = MainText
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                StatusBadge(
-                    text = operationalStatus.uppercase(),
-                    color = if (operationalStatus == "Em operação") {
-                        RescueGreen
-                    } else {
-                        RescueAmber
-                    }
+            Column {
+                Text(
+                    text = "RescueNet",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = RescueBlue
                 )
 
                 Text(
-                    text = "ID: 001",
-                    fontSize = 12.sp,
-                    color = SecondaryText
+                    text = "Monitoramento de equipes de resgate",
+                    fontSize = 14.sp,
+                    color = SecondaryTextColor
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Localização
-            SectionTitle("Localização")
-
-            Spacer(modifier = Modifier.height(10.dp))
-
+            // Identificação e situação da equipe
             InfoCard {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -166,234 +113,327 @@ fun RescueNetScreen() {
                 ) {
                     Column {
                         Text(
-                            text = "GPS",
+                            text = "Equipe",
                             fontSize = 13.sp,
-                            color = SecondaryText
+                            color = SecondaryTextColor
                         )
 
                         Text(
-                            text = "Localização simulada",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MainText
+                            text = "#001",
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MainTextColor
                         )
                     }
 
-                    StatusBadge(
-                        text = "SIMULADO",
-                        color = RescueAmber
-                    )
+                    StatusBadge(status = uiState.operationalStatus)
                 }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Text(
-                    text = "Latitude",
-                    fontSize = 12.sp,
-                    color = SecondaryText
-                )
-
-                Text(
-                    text = "-22.526000",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MainText
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Text(
-                    text = "Longitude",
-                    fontSize = 12.sp,
-                    color = SecondaryText
-                )
-
-                Text(
-                    text = "-41.945000",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = MainText
-                )
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            // Informações de localização
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Localização")
+
+                InfoCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "GPS",
+                                fontWeight = FontWeight.SemiBold,
+                                color = MainTextColor
+                            )
+
+                            Text(
+                                text = "Localização simulada",
+                                fontSize = 12.sp,
+                                color = SecondaryTextColor
+                            )
+                        }
+
+                        Text(
+                            text = "Ativo",
+                            color = OnlineGreen,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = "Latitude: -22.526",
+                        fontSize = 14.sp,
+                        color = MainTextColor
+                    )
+
+                    Text(
+                        text = "Longitude: -41.945",
+                        fontSize = 14.sp,
+                        color = MainTextColor
+                    )
+                }
+            }
 
             // Bateria
-            SectionTitle("Dispositivo")
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Bateria")
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            InfoCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
+                InfoCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(
-                            text = "Bateria",
-                            fontSize = 13.sp,
-                            color = SecondaryText
+                            text = "Nível da bateria",
+                            color = MainTextColor
                         )
 
                         Text(
                             text = "78%",
-                            fontSize = 25.sp,
                             fontWeight = FontWeight.Bold,
-                            color = MainText
+                            color = OnlineGreen
+                        )
+                    }
+                }
+            }
+
+            // Conexão MQTT
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Comunicação MQTT")
+
+                InfoCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Estado da conexão",
+                            color = MainTextColor
+                        )
+
+                        StatusBadge(
+                            status = when {
+                                uiState.mqttConnected -> "Conectado"
+                                uiState.mqttConnecting -> "Conectando"
+                                else -> "Desconectado"
+                            }
                         )
                     }
 
-                    StatusBadge(
-                        text = "NÍVEL BOM",
-                        color = RescueGreen
+                    Text(
+                        text = uiState.mqttMessage,
+                        fontSize = 13.sp,
+                        color = SecondaryTextColor
+                    )
+
+                    if (uiState.mqttError != null) {
+                        Text(
+                            text = uiState.mqttError!!,
+                            fontSize = 12.sp,
+                            color = EmergencyRed
+                        )
+                    }
+
+                    Button(
+                        onClick = { viewModel.connectMqtt() },
+                        enabled = !uiState.mqttConnecting &&
+                                !uiState.mqttConnected,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RescueBlue
+                        )
+                    ) {
+                        Text(
+                            text = if (uiState.mqttConnecting) {
+                                "Conectando..."
+                            } else {
+                                "Conectar ao broker"
+                            }
+                        )
+                    }
+
+                    Button(
+                        onClick = { viewModel.publishTestLocation() },
+                        enabled = uiState.mqttConnected,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = OnlineGreen
+                        )
+                    ) {
+                        Text("Enviar localização de teste")
+                    }
+
+                    if (uiState.lastPublishedMessage != null) {
+                        Text(
+                            text = "Última mensagem publicada:",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MainTextColor
+                        )
+
+                        Text(
+                            text = uiState.lastPublishedMessage!!,
+                            fontSize = 11.sp,
+                            color = SecondaryTextColor
+                        )
+                    }
+                }
+            }
+
+            // Emergência
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Emergência")
+
+                Button(
+                    onClick = { viewModel.toggleEmergency() },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(58.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (uiState.emergencyActivated) {
+                            AttentionAmber
+                        } else {
+                            EmergencyRed
+                        }
+                    )
+                ) {
+                    Text(
+                        text = if (uiState.emergencyActivated) {
+                            "EMERGÊNCIA ATIVADA"
+                        } else {
+                            "ACIONAR EMERGÊNCIA"
+                        },
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Emergência
-            SectionTitle("Central de emergência")
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Button(
-                onClick = {
-                    emergencyActivated = !emergencyActivated
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = RescueRed
-                )
-            ) {
-                Text(
-                    text = if (emergencyActivated) {
-                        "EMERGÊNCIA SIMULADA ATIVADA"
-                    } else {
-                        "ACIONAR EMERGÊNCIA"
-                    },
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            if (emergencyActivated) {
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Text(
-                    text = "Simulação: alerta de emergência acionado na interface.",
-                    fontSize = 12.sp,
-                    color = RescueRed
-                )
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
             // Ações operacionais
-            SectionTitle("Ações operacionais")
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                ActionButton(
-                    text = "Assistência médica",
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        selectedAction = "Assistência médica"
-                    }
-                )
+                SectionTitle("Ações operacionais")
 
-                ActionButton(
-                    text = "Evacuação",
-                    modifier = Modifier.weight(1f),
-                    onClick = {
-                        selectedAction = "Evacuação"
-                    }
-                )
-            }
-
-            if (selectedAction.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Text(
-                    text = "Ação selecionada: $selectedAction (simulação)",
-                    fontSize = 12.sp,
-                    color = RescueBlue
-                )
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Estado operacional
-            SectionTitle("Estado operacional")
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                listOf("Em operação", "Em pausa").forEach { status ->
-                    OutlinedButton(
-                        onClick = {
-                            operationalStatus = status
-                        },
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ActionButton(
+                        text = "Assistência médica",
+                        selected = uiState.selectedAction == "Assistência médica",
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Text(
-                            text = status,
-                            fontSize = 12.sp
-                        )
-                    }
+                        onClick = {
+                            viewModel.selectAction("Assistência médica")
+                        }
+                    )
+
+                    ActionButton(
+                        text = "Evacuação",
+                        selected = uiState.selectedAction == "Evacuação",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            viewModel.selectAction("Evacuação")
+                        }
+                    )
+                }
+
+                if (uiState.selectedAction.isNotEmpty()) {
+                    Text(
+                        text = "Ação selecionada: ${uiState.selectedAction}",
+                        fontSize = 12.sp,
+                        color = RescueBlue
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(28.dp))
+            // Estado operacional
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Alterar estado operacional")
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ActionButton(
+                        text = "Em operação",
+                        selected = uiState.operationalStatus == "Em operação",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            viewModel.updateOperationalStatus("Em operação")
+                        }
+                    )
+
+                    ActionButton(
+                        text = "Em pausa",
+                        selected = uiState.operationalStatus == "Em pausa",
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            viewModel.updateOperationalStatus("Em pausa")
+                        }
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Rodapé
             Text(
-                text = "RescueNet • Protótipo",
+                text = "RescueNet • Sistema de monitoramento de resgate",
                 modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
                 fontSize = 11.sp,
-                color = SecondaryText
+                color = SecondaryTextColor
             )
         }
     }
 }
 
 @Composable
-private fun SectionTitle(text: String) {
+fun SectionTitle(title: String) {
     Text(
-        text = text,
+        text = title,
         fontSize = 17.sp,
         fontWeight = FontWeight.Bold,
-        color = MainText
+        color = MainTextColor
     )
 }
 
 @Composable
-private fun InfoCard(
-    content: @Composable () -> Unit
-) {
+fun InfoCard(content: @Composable () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color.White
+            containerColor = SurfaceColor
         ),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = 1.dp
+            defaultElevation = 0.dp
         )
     ) {
         Column(
-            modifier = Modifier.padding(18.dp)
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             content()
         }
@@ -401,42 +441,50 @@ private fun InfoCard(
 }
 
 @Composable
-private fun StatusBadge(
-    text: String,
-    color: Color
-) {
+fun StatusBadge(status: String) {
+    val badgeColor = when (status) {
+        "Em operação", "Conectado" -> OnlineGreen
+        "Em pausa", "Conectando" -> AttentionAmber
+        else -> SecondaryTextColor
+    }
+
     Surface(
-        color = color.copy(alpha = 0.12f),
-        shape = RoundedCornerShape(50)
+        color = badgeColor.copy(alpha = 0.12f),
+        shape = RoundedCornerShape(20.dp)
     ) {
         Text(
-            text = text,
+            text = status,
             modifier = Modifier.padding(
-                horizontal = 10.dp,
-                vertical = 6.dp
+                horizontal = 12.dp,
+                vertical = 7.dp
             ),
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            color = color
+            color = badgeColor,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }
 
 @Composable
-private fun ActionButton(
+fun ActionButton(
     text: String,
+    selected: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    OutlinedButton(
+    Button(
         onClick = onClick,
-        modifier = modifier.height(58.dp),
-        shape = RoundedCornerShape(10.dp)
+        modifier = modifier.height(48.dp),
+        shape = RoundedCornerShape(10.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) RescueBlue else SurfaceColor,
+            contentColor = if (selected) Color.White else MainTextColor
+        )
     ) {
         Text(
             text = text,
             fontSize = 12.sp,
-            color = RescueBlue
+            textAlign = TextAlign.Center
         )
     }
 }
@@ -445,6 +493,8 @@ private fun ActionButton(
 @Composable
 fun RescueNetPreview() {
     RescueNetTheme {
-        RescueNetScreen()
+        RescueNetScreen(
+            viewModel = RescueNetViewModel()
+        )
     }
 }
