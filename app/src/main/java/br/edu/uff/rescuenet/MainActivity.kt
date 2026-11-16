@@ -1,5 +1,13 @@
 package br.edu.uff.rescuenet
 
+
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -74,6 +82,47 @@ class MainActivity : ComponentActivity() {
 fun RescueNetScreen(viewModel: RescueNetViewModel) {
     val uiState by viewModel.uiState.collectAsState()
 
+         val context = LocalContext.current
+
+    val locationPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val fineGranted =
+                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+
+            val coarseGranted =
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+            if (fineGranted || coarseGranted) {
+                viewModel.startLocationTracking(context)
+            }
+        }
+
+    fun requestLocationPermission() {
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        val coarseGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (fineGranted || coarseGranted) {
+            viewModel.startLocationTracking(context)
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
     Scaffold(
         containerColor = BackgroundColor
     ) { innerPadding ->
@@ -130,6 +179,8 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                 }
             }
 
+
+
             // Informações de localização
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -139,7 +190,8 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                 InfoCard {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
                             Text(
@@ -149,32 +201,73 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                             )
 
                             Text(
-                                text = "Localização simulada",
+                                text = uiState.locationMessage,
                                 fontSize = 12.sp,
                                 color = SecondaryTextColor
                             )
                         }
 
-                        Text(
-                            text = "Ativo",
-                            color = OnlineGreen,
-                            fontWeight = FontWeight.SemiBold
-                        )
+                        StatusBadge(
+                            status = when {
+                            uiState.locationTracking && uiState.latitude != null -> "Ativo"
+                            uiState.locationTracking -> "Buscando"
+                            else -> "Inativo"
+                        }
+                      )
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Text(
-                        text = "Latitude: -22.526",
+                        text = uiState.latitude?.let {
+                            "Latitude: $it"
+                        } ?: "Latitude: aguardando localização",
                         fontSize = 14.sp,
                         color = MainTextColor
                     )
 
                     Text(
-                        text = "Longitude: -41.945",
+                        text = uiState.longitude?.let {
+                            "Longitude: $it"
+                        } ?: "Longitude: aguardando localização",
                         fontSize = 14.sp,
                         color = MainTextColor
                     )
+
+                    Text(
+                        text = uiState.locationAccuracy?.let {
+                            "Precisão: %.1f metros".format(it)
+                        } ?: "Precisão: indisponível",
+                        fontSize = 14.sp,
+                        color = MainTextColor
+                    )
+
+                    Button(
+                        onClick = { requestLocationPermission() },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RescueBlue
+                        )
+                    ) {
+                        Text("Ativar localização")
+                    }
+
+                    Button(
+                        onClick = { viewModel.stopLocationTracking() },
+                        enabled = uiState.locationTracking,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SecondaryTextColor
+                        )
+                    ) {
+                        Text("Interromper localização")
+                    }
                 }
             }
 
@@ -277,6 +370,24 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                     ) {
                         Text("Enviar localização de teste")
                     }
+
+
+                    Button(
+                        onClick = { viewModel.publishCurrentLocation() },
+                        enabled = uiState.mqttConnected &&
+                                uiState.latitude != null &&
+                                uiState.longitude != null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RescueBlue
+                        )
+                    ) {
+                        Text("Enviar localização GPS real")
+                    }
+
 
                     if (uiState.lastPublishedMessage != null) {
                         Text(

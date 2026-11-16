@@ -1,0 +1,13 @@
+# Executaveis e arquivos de teste compilados
+*.exe
+*.dll
+*.test
+
+# Diretorios temporarios e de compilacao
+/bin/
+/tmp/
+
+# Configuracoes locais e segredos
+.env
+.env.*
+!.env.example

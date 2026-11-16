@@ -21,3 +21,30 @@ local.properties
 
 # Build outputs
 **/build/
+# Configuracoes locais e segredos
+.env
+.env.*
+!.env.example
+local.properties
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Backups e arquivos temporarios locais
+*.bak
+*.backup
+*.old
+*.tmp
+PowerShell 7.7.0.txt
+
+# Executaveis e artefatos compilados
+*.exe
+*.dll
+*.test
+**/bin/
+
+
+# Capturas de tela e registros tecnicos locais
+/registros tecnicos/
+/rn1.png

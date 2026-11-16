@@ -66,6 +66,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
     implementation("com.hivemq:hivemq-mqtt-client:1.4.1")
+    implementation(libs.play.services.location)
 
 
 }
