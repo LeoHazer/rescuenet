@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -83,6 +84,10 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
     val uiState by viewModel.uiState.collectAsState()
 
          val context = LocalContext.current
+
+    LaunchedEffect(context, viewModel) {
+        viewModel.refreshBatteryLevel(context)
+    }
 
     val locationPermissionLauncher =
         rememberLauncherForActivityResult(
@@ -288,7 +293,7 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                         )
 
                         Text(
-                            text = "78%",
+                            text = uiState.batteryLevel?.let { "$it%" } ?: "Indisponível",
                             fontWeight = FontWeight.Bold,
                             color = OnlineGreen
                         )
@@ -337,7 +342,7 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                     }
 
                     Button(
-                        onClick = { viewModel.connectMqtt() },
+                        onClick = { viewModel.connectMqtt(context) },
                         enabled = !uiState.mqttConnecting &&
                                 !uiState.mqttConnected,
                         modifier = Modifier
@@ -358,7 +363,7 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                     }
 
                     Button(
-                        onClick = { viewModel.publishTestLocation() },
+                        onClick = { viewModel.publishTestLocation(context) },
                         enabled = uiState.mqttConnected,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -373,7 +378,7 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
 
 
                     Button(
-                        onClick = { viewModel.publishCurrentLocation() },
+                        onClick = { viewModel.publishCurrentLocation(context) },
                         enabled = uiState.mqttConnected &&
                                 uiState.latitude != null &&
                                 uiState.longitude != null,
@@ -406,6 +411,56 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                 }
             }
 
+            // Coordenação Inteligente
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SectionTitle("Coordenação Inteligente")
+
+                InfoCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Dispositivos descobertos",
+                            color = MainTextColor
+                        )
+
+                        Text(
+                            text = "${uiState.discoveredNodeCount}",
+                            fontWeight = FontWeight.Bold,
+                            color = RescueBlue
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Pontuação local",
+                            color = MainTextColor
+                        )
+
+                        Text(
+                            text = uiState.localElectionScore?.let {
+                                "%.2f / 100".format(it)
+                            } ?: "Aguardando",
+                            fontWeight = FontWeight.Bold,
+                            color = OnlineGreen
+                        )
+                    }
+
+                    Text(
+                        text = "Alguns indicadores da pontuação ainda utilizam valores provisórios.",
+                        fontSize = 11.sp,
+                        color = SecondaryTextColor
+                    )
+                }
+            }
             // Emergência
             Column(
                 verticalArrangement = Arrangement.spacedBy(10.dp)

@@ -19,7 +19,7 @@ type LocationMessage struct {
 	Timestamp int64   `json:"timestamp"`
 }
 
-// Validate verifica se os dados recebidos sao validos.
+// Verifica se os dados recebidos são válidos.
 func (m LocationMessage) Validate() error {
 	if m.TeamID <= 0 {
 		return fmt.Errorf("team_id deve ser maior que zero")

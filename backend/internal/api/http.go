@@ -50,14 +50,14 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.db.PingContext(ctx); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-			"status": "unavailable",
+			"status":   "unavailable",
 			"database": "disconnected",
 		})
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "ok",
+		"status":   "ok",
 		"database": "connected",
 	})
 }
@@ -122,6 +122,15 @@ func (h *Handler) teamLocations(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/teams/")
 	parts := strings.Split(path, "/")
 
+	if len(parts) == 2 && parts[1] == "presence" {
+		h.teamPresence(w, r, parts[0])
+		return
+	}
+
+	if len(parts) == 3 && parts[1] == "presence" && parts[2] == "history" {
+		h.teamPresenceHistory(w, r, parts[0])
+		return
+	}
 	if len(parts) != 2 || parts[1] != "locations" {
 		http.NotFound(w, r)
 		return
@@ -266,6 +275,160 @@ func (h *Handler) latestLocations(w http.ResponseWriter, r *http.Request) {
 	if err := rows.Err(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{
 			"error": "failed to read latest locations",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+func (h *Handler) teamPresence(w http.ResponseWriter, r *http.Request, teamIDPath string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	teamID, err := strconv.Atoi(teamIDPath)
+	if err != nil || teamID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid team id",
+		})
+		return
+	}
+
+	rows, err := h.db.QueryContext(
+		r.Context(),
+		`SELECT team_id, node_id, status, event_timestamp, received_at
+                 FROM node_presence
+                 WHERE team_id = $1
+                 ORDER BY received_at DESC, node_id`,
+		teamID,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to query team presence",
+		})
+		return
+	}
+	defer rows.Close()
+
+	type NodePresence struct {
+		TeamID         int       `json:"team_id"`
+		NodeID         int64     `json:"node_id"`
+		Status         string    `json:"status"`
+		EventTimestamp time.Time `json:"event_timestamp"`
+		ReceivedAt     time.Time `json:"received_at"`
+	}
+
+	result := make([]NodePresence, 0)
+
+	for rows.Next() {
+		var presence NodePresence
+
+		if err := rows.Scan(
+			&presence.TeamID,
+			&presence.NodeID,
+			&presence.Status,
+			&presence.EventTimestamp,
+			&presence.ReceivedAt,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "failed to read team presence",
+			})
+			return
+		}
+
+		result = append(result, presence)
+	}
+
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to read team presence",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) teamPresenceHistory(w http.ResponseWriter, r *http.Request, teamIDPath string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w)
+		return
+	}
+
+	teamID, err := strconv.Atoi(teamIDPath)
+	if err != nil || teamID <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid team id",
+		})
+		return
+	}
+
+	limit := 50
+
+	if value := r.URL.Query().Get("limit"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 1 || parsed > 200 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "limit must be between 1 and 200",
+			})
+			return
+		}
+		limit = parsed
+	}
+
+	rows, err := h.db.QueryContext(
+		r.Context(),
+		`SELECT id, team_id, node_id, status, event_timestamp, received_at
+                 FROM presence_history
+                 WHERE team_id = $1
+                 ORDER BY received_at DESC, id DESC
+                 LIMIT $2`,
+		teamID,
+		limit,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to query presence history",
+		})
+		return
+	}
+	defer rows.Close()
+
+	type PresenceEvent struct {
+		ID             int64     `json:"id"`
+		TeamID         int       `json:"team_id"`
+		NodeID         int64     `json:"node_id"`
+		Status         string    `json:"status"`
+		EventTimestamp time.Time `json:"event_timestamp"`
+		ReceivedAt     time.Time `json:"received_at"`
+	}
+
+	result := make([]PresenceEvent, 0)
+
+	for rows.Next() {
+		var event PresenceEvent
+
+		if err := rows.Scan(
+			&event.ID,
+			&event.TeamID,
+			&event.NodeID,
+			&event.Status,
+			&event.EventTimestamp,
+			&event.ReceivedAt,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": "failed to read presence history",
+			})
+			return
+		}
+
+		result = append(result, event)
+	}
+
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to read presence history",
 		})
 		return
 	}
