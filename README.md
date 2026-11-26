@@ -6,6 +6,8 @@ Este documento apresenta o procedimento para clonar o projeto, preparar o ambien
 
 > **Branch de referência:** `feat/sprint-4-robustez`
 
+> **Computador novo?** Siga o [Guia de execução](GUIA_DE_EXECUCAO.md): todos os comandos, do clone ao sistema completo funcionando, com Docker para o broker e o banco.
+
 ---
 
 ## 1. Visão geral do projeto
@@ -43,6 +45,8 @@ RescueNet/
 ├── tools/                # Nó simulado em Python para cenários roteirizados
 ├── gradle/               # Configuração do Gradle Wrapper
 ├── registros tecnicos/   # Documentação técnica versionada parcialmente
+├── docker-compose.yml    # Broker MQTT e PostgreSQL (com criação das tabelas)
+├── GUIA_DE_EXECUCAO.md   # Passo a passo para um computador novo
 ├── .gitignore
 ├── build.gradle.kts
 ├── settings.gradle.kts
@@ -122,205 +126,79 @@ node --version
 npm --version
 ```
 
-### 2.5. PostgreSQL
+### 2.5. Docker Desktop
 
-O backend utiliza PostgreSQL para persistência dos dados.
+O broker MQTT (Mosquitto) e o banco (PostgreSQL) rodam em containers, definidos no `docker-compose.yml` da raiz. Não é preciso instalá-los no Windows.
 
-Download: https://www.postgresql.org/download/
-
-Será necessário ter:
-- Servidor PostgreSQL em execução.
-- Banco de dados `rescuenet`.
-- Usuário com permissão de acesso ao banco.
-- Senha configurada para esse usuário.
-
-### 2.6. Mosquitto MQTT Broker
-
-O projeto utiliza MQTT para comunicação entre os nós Android e o backend.
-
-Download: https://mosquitto.org/download/
-
-No Windows, instale o Eclipse Mosquitto e confirme que os executáveis `mosquitto.exe`, `mosquitto_pub.exe` e `mosquitto_sub.exe` estão disponíveis no PATH ou utilize o caminho completo dos executáveis.
+Download: https://www.docker.com/products/docker-desktop/
 
 ---
 
 ## 3. Clonando o projeto
 
-Abra o PowerShell e escolha uma pasta para armazenar o projeto.
-
-Clone diretamente a branch de desenvolvimento:
-
 ```powershell
 git clone --branch feat/sprint-4-robustez --single-branch https://github.com/LeoHazer/rescuenet.git
-```
-
-Entre na pasta:
-
-```powershell
 cd rescuenet
 ```
 
-Confira a branch:
+---
+
+## 4. Resumo: subindo tudo
+
+Com o Docker Desktop aberto, na raiz do projeto:
 
 ```powershell
-git branch --show-current
+docker compose up -d                     # broker e banco (uma vez)
+cd backend; go run ./cmd/server          # terminal 1
+cd dashboard; npm install; npm run dev   # terminal 2 (npm install só na primeira vez)
+.\gradlew.bat -p simulator run           # terminal 3, opcional
 ```
 
-O resultado esperado é:
-
-```text
-feat/sprint-4-robustez
-```
-
-Confira o estado inicial:
-
-```powershell
-git status
-```
-
-O repositório deve estar sem alterações locais.
+O passo a passo, incluindo os celulares, está no [Guia de execução](GUIA_DE_EXECUCAO.md). As seções 5 a 7 descrevem cada parte em detalhe.
 
 ---
 
-## 4. Preparando o banco de dados PostgreSQL
+## 5. Broker MQTT e banco de dados (Docker)
 
-O backend exige uma conexão PostgreSQL válida.
+```powershell
+docker compose up -d
+```
 
-A configuração padrão do código utiliza:
+| Serviço | Container | Porta no computador |
+|---|---|---|
+| Mosquitto | `rescuenet-mqtt` | 1883 |
+| PostgreSQL | `rescuenet-db` | 5433 (banco, usuário e senha: `rescuenet`) |
 
-| Parâmetro | Valor padrão |
+Na primeira criação do banco, o PostgreSQL executa os scripts de `backend/migrations` em ordem:
+
+| Script | O que cria |
 |---|---|
-| Host | `127.0.0.1` |
-| Porta | `5432` |
-| Banco | `rescuenet` |
-| Usuário | `rescuenet_app` |
-| Senha | Obrigatória |
+| `001_schema_base.sql` | Tabelas `teams`, `locations`, `node_presence` e `presence_history`, e a equipe 1 |
+| `002_lideranca.sql` | Tabelas `team_leaders` (coordenador atual) e `leader_history` |
+| `003_localizacao_por_no.sql` | Coluna `node_id` em `locations` (um marcador por aparelho no mapa) |
 
-A senha não possui valor padrão e deve ser configurada no ambiente.
+O schema base foi reconstruído a partir das consultas do backend. Os dados ficam em um volume do Docker e sobrevivem a reinícios; para apagar tudo e recriar as tabelas do zero, rode `docker compose down -v` e depois `docker compose up -d`.
 
-**Atenção:** o servidor Go não executa migrations automaticamente durante a inicialização. O banco precisa estar previamente criado e conter as tabelas esperadas pelo backend, incluindo:
+A porta 5433 evita conflito com um PostgreSQL já instalado no Windows. Usuário e senha são fixos no `docker-compose.yml` e em `backend/internal/database/postgres.go`, por se tratar de um projeto acadêmico de demonstração.
 
-- `teams`
-- `locations`
-- `node_presence`
-- `presence_history`
-
-O script SQL de criação e inicialização do schema deve ser obtido com a equipe responsável pelo banco, caso ainda não esteja disponível no repositório. Não tente iniciar o backend antes de preparar essas estruturas.
-
-Depois do schema base, aplique o script das tabelas de liderança (`team_leaders` e `leader_history`), usadas para exibir o coordenador atual no dashboard. O script é idempotente e concede as permissões ao usuário `rescuenet_app`, se ele existir:
+Para acompanhar as mensagens MQTT em tempo real:
 
 ```powershell
-psql -h 127.0.0.1 -U postgres -d rescuenet -f backend/migrations/lideranca.sql
+docker exec -it rescuenet-mqtt mosquitto_sub -t "rescuenet/#" -v
 ```
-
-Aplique também o script da localização por aparelho. Ele adiciona a coluna `node_id` (anulável) à tabela `locations`, cria o índice `(team_id, node_id, recorded_at DESC)` e concede as permissões ao `rescuenet_app`, se ele existir. Também é idempotente:
-
-```powershell
-psql -h 127.0.0.1 -U postgres -d rescuenet -f backend/migrations/localizacao_por_no.sql
-```
-
-**Atenção:** o backend atual grava `node_id` em toda localização recebida. Sem esse script, as inserções falham com erro de coluna inexistente e as posições deixam de ser salvas.
-
-### Configurando as variáveis de ambiente
-
-No PowerShell, defina as variáveis para a sessão atual:
-
-```powershell
-$env:RESCUENET_DB_HOST = "127.0.0.1"
-$env:RESCUENET_DB_PORT = "5432"
-$env:RESCUENET_DB_NAME = "rescuenet"
-$env:RESCUENET_DB_USER = "rescuenet_app"
-$env:RESCUENET_DB_PASSWORD = "SUA_SENHA"
-```
-
-Substitua `SUA_SENHA` pela senha configurada no PostgreSQL.
-
-Essas variáveis são válidas apenas na janela atual do PowerShell. Caso abra outro terminal para executar o backend, configure-as novamente.
-
-**Nunca publique senhas, tokens ou credenciais no GitHub.**
-
----
-
-## 5. Inicializando o broker MQTT
-
-O backend espera encontrar o broker MQTT em:
-
-```text
-tcp://127.0.0.1:1883
-```
-
-O aplicativo Android também utiliza a porta 1883.
-
-Abra um novo terminal PowerShell e execute:
-
-```powershell
-mosquitto -v
-```
-
-O parâmetro `-v` habilita logs detalhados, úteis para acompanhar conexões, publicações e assinaturas.
-
-Mantenha esse terminal aberto enquanto estiver executando o projeto.
-
-### Testando a comunicação MQTT
-
-Em outro terminal, execute uma assinatura:
-
-```powershell
-mosquitto_sub -h 127.0.0.1 -p 1883 -t "rescuenet/#" -v
-```
-
-Em um terceiro terminal, publique uma mensagem de teste:
-
-```powershell
-mosquitto_pub -h 127.0.0.1 -p 1883 -t "rescuenet/teste" -m "RescueNet MQTT OK"
-```
-
-A mensagem publicada deverá aparecer no terminal que está executando o `mosquitto_sub`.
-
-Para encerrar a assinatura, pressione `Ctrl + C`.
 
 ---
 
 ## 6. Executando o backend Go
 
-Abra outro terminal PowerShell na raiz do projeto.
-
-Entre na pasta do backend:
-
 ```powershell
 cd backend
-```
-
-Baixe as dependências:
-
-```powershell
-go mod download
-```
-
-Configure novamente as variáveis do PostgreSQL, caso necessário:
-
-```powershell
-$env:RESCUENET_DB_HOST = "127.0.0.1"
-$env:RESCUENET_DB_PORT = "5432"
-$env:RESCUENET_DB_NAME = "rescuenet"
-$env:RESCUENET_DB_USER = "rescuenet_app"
-$env:RESCUENET_DB_PASSWORD = "SUA_SENHA"
-```
-
-Execute o servidor:
-
-```powershell
 go run ./cmd/server
 ```
 
-Quando tudo estiver configurado corretamente, os logs deverão indicar:
+Não há variáveis de ambiente a configurar: o backend conecta ao banco do Docker (`127.0.0.1:5433`) e ao broker (`127.0.0.1:1883`). Se o banco ainda estiver iniciando, ele tenta de novo por até um minuto.
 
-- Conexão estabelecida com PostgreSQL.
-- Conexão com o broker MQTT.
-- Assinatura dos tópicos de localização e presença.
-- API REST disponível em `http://127.0.0.1:8080`.
-
-Mantenha esse terminal aberto.
+Os logs devem indicar a conexão com o PostgreSQL, a assinatura dos tópicos de localização, presença e eleição e a API REST em `http://127.0.0.1:8080`.
 
 ### Endpoints disponíveis
 
@@ -643,22 +521,23 @@ A validação distribuída deve ser feita com dois dispositivos efetivamente con
 
 O simulador cria nós que participam da eleição como se fossem celulares: cada um tem a própria conexão MQTT, com LWT e presença, e executa **os mesmos arquivos de eleição do aplicativo** (o build do simulador compila `app/src/main/java/br/edu/uff/rescuenet/data/election` diretamente, sem cópia). Assim, os cenários de eleição podem ser demonstrados sem depender de vários aparelhos, e também misturando nós simulados com celulares reais.
 
-Com o broker, o backend e o dashboard em execução, gere e inicie o simulador a partir da raiz do projeto:
+Com o broker, o backend e o dashboard em execução, inicie o simulador a partir da raiz do projeto (o comando compila e executa):
 
 ```powershell
-.\gradlew.bat -p simulator installDist
-.\simulator\build\install\rescuenet-simulator\bin\rescuenet-simulator.bat
+.\gradlew.bat -p simulator run
 ```
 
 Por padrão, ele usa o broker em `127.0.0.1:1883`, a equipe 1 (a mesma do aplicativo) e expõe a API em `http://127.0.0.1:8090/sim`, acessada pelo dashboard pelo proxy `/sim` do Vite. Para outro broker ou equipe:
 
 ```powershell
-.\simulator\build\install\rescuenet-simulator\bin\rescuenet-simulator.bat --broker 192.168.0.10:1883 --equipe 1 --porta 8090
+.\gradlew.bat -p simulator run --args="--broker 192.168.0.10:1883 --equipe 1 --porta 8090"
 ```
 
-Encerre com `Ctrl+C`: os nós publicam o LWT `offline` antes de sair.
+Encerre com `Ctrl+C`: as conexões dos nós caem e o broker publica o LWT `offline` de cada um.
 
-No dashboard, o painel **Nós simulados** fica na seção "Coordenação da operação", acima da tabela de dispositivos, onde os nós simulados aparecem com a etiqueta "simulado". Cada nó tem um **nível geral**, aplicado a estabilidade, disponibilidade, conectividade, recursos e eficiência de dados, e uma **bateria**. A pontuação resultante é `0,75 × nível + 0,25 × bateria`, e abaixo de 15% de bateria o nó fica inelegível. Os IDs são sequenciais (1001, 1002, ...) e, como no aplicativo, só desempatam pontuações iguais.
+No dashboard, o painel **Nós simulados** fica na seção "Coordenação da operação", acima da tabela de dispositivos, onde os nós simulados aparecem com a etiqueta "simulado". Cada nó tem um **nível geral**, aplicado a estabilidade, disponibilidade, conectividade, recursos e eficiência de dados, e uma **bateria**. A pontuação resultante é `0,75 × nível + 0,25 × bateria`. Os IDs são sequenciais (1001, 1002, ...) e, como no aplicativo, só desempatam pontuações iguais.
+
+Regra da bateria mínima (15%), igual no aplicativo e no simulador: um nó com bateria suficiente sempre tem prioridade sobre um nó abaixo do mínimo, mesmo com pontuação menor. Um nó abaixo do mínimo só lidera se nenhum nó com bateria suficiente estiver na rede (por exemplo, quando está sozinho) e, assim que um nó com bateria suficiente aparece, passa a liderança a ele imediatamente, sem a margem de 10 pontos da histerese.
 
 | Demonstração | Como fazer no painel | Resultado esperado |
 |---|---|---|
@@ -666,7 +545,9 @@ No dashboard, o painel **Nós simulados** fica na seção "Coordenação da oper
 | Falha do coordenador | "Derrubar" no coordenador | O LWT marca o nó como offline e outro assume em cerca de 15 s |
 | Estabilidade | Adicionar um nó pouco melhor que o líder (menos de 10 pontos) | Ele entra como seguidor e não toma a liderança |
 | Histerese | Subir o nível de um seguidor até passar 10 pontos do líder e "Aplicar" | O líder abre a eleição e passa a liderança em cerca de 10 s |
-| Bateria baixa | Baixar a bateria do coordenador para menos de 15% e "Aplicar" | Ele fica inelegível e outro nó assume |
+| Bateria baixa | Baixar a bateria do coordenador para menos de 15% e "Aplicar" | Um nó com bateria suficiente assume em até cerca de 10 s |
+| Único nó sem bateria | "Remover todos" e adicionar um nó com bateria 10 | Ele vira coordenador, pois não há alternativa |
+| Chegada de nó com bateria | Depois do caso anterior, adicionar um nó Fraco | O novo nó assume na hora, mesmo com pontuação menor |
 | Reconexão | "Reconectar" um nó derrubado | Ele volta como seguidor, sem nova eleição |
 
 Para o cenário de dois coordenadores simultâneos (split-brain), que exige um nó com comportamento incorreto de propósito, use `tools/no_simulado.py` (veja as opções com `python tools/no_simulado.py --help`).
@@ -757,11 +638,8 @@ adb reverse --list
 
 Verifique:
 
-- Se o PostgreSQL está em execução.
-- Se o banco `rescuenet` existe.
-- Se as tabelas necessárias foram criadas.
-- Se as variáveis de ambiente estão configuradas.
-- Se o Mosquitto está disponível em `127.0.0.1:1883`.
+- Se o Docker Desktop está aberto e os containers estão de pé: `docker compose ps` deve mostrar `rescuenet-mqtt` e `rescuenet-db` (healthy).
+- Se as tabelas existem: `docker exec rescuenet-db psql -U rescuenet -d rescuenet -c "\dt"` deve listar 6 tabelas. Se não, recrie o banco com `docker compose down -v` e `docker compose up -d`.
 
 ### Dashboard não apresenta dados
 
