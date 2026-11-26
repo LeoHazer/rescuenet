@@ -48,3 +48,7 @@ PowerShell 7.7.0.txt
 # Capturas de tela e registros tecnicos locais
 /registros tecnicos/
 /rn1.png
+
+# Python
+__pycache__/
+*.pyc
