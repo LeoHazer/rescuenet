@@ -1,11 +1,7 @@
 -- RescueNet: tabelas de liderança (coordenador atual e histórico).
 --
--- Execute uma vez no banco "rescuenet", com um usuário administrador,
--- depois do schema base (teams, locations, node_presence, presence_history):
---
---   psql -h 127.0.0.1 -U postgres -d rescuenet -f backend/migrations/lideranca.sql
---
--- O script é idempotente: pode ser executado novamente sem efeito colateral.
+-- Executado automaticamente pelo docker-compose.yml na primeira vez que o
+-- banco é criado, depois de 001_schema_base.sql.
 
 -- Coordenador atual de cada equipe, mantido a partir dos anúncios
 -- COORDINATOR e HEARTBEAT do tópico rescuenet/teams/{id}/election.
@@ -31,14 +27,3 @@ CREATE TABLE IF NOT EXISTS leader_history (
 
 CREATE INDEX IF NOT EXISTS leader_history_received_idx
     ON leader_history (received_at DESC, id DESC);
-
--- Permissões para o usuário da aplicação, se ele existir.
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rescuenet_app') THEN
-        GRANT SELECT, INSERT, UPDATE ON team_leaders TO rescuenet_app;
-        GRANT SELECT, INSERT ON leader_history TO rescuenet_app;
-        GRANT USAGE, SELECT ON SEQUENCE leader_history_id_seq TO rescuenet_app;
-    END IF;
-END
-$$;

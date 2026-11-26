@@ -31,7 +31,16 @@ fun main(args: Array<String>) {
     )
 
     val brokerLabel = "${options.brokerHost}:${options.brokerPort}"
-    val server = SimulatorApi(registry, brokerLabel).start("127.0.0.1", options.httpPort)
+    val server = try {
+        SimulatorApi(registry, brokerLabel).start("127.0.0.1", options.httpPort)
+    } catch (error: java.net.BindException) {
+        System.err.println(
+            "A porta ${options.httpPort} já está em uso: provavelmente outro simulador " +
+                "ainda está aberto. Feche o terminal dele (ou encerre o processo Java no " +
+                "Gerenciador de Tarefas) e rode de novo."
+        )
+        kotlin.system.exitProcess(1)
+    }
 
     Runtime.getRuntime().addShutdownHook(Thread {
         // Encerramento limpo: cada nó publica o LWT "offline".

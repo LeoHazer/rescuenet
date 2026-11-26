@@ -481,7 +481,8 @@
       {#if nodeLocationsError}
         <div class="error-banner">
           Posição dos aparelhos indisponível: {nodeLocationsError}. Confira se o
-          script backend/migrations/localizacao_por_no.sql foi aplicado no banco.
+          backend está rodando e se o banco foi criado pelo docker compose
+          (script 003_localizacao_por_no.sql).
         </div>
       {/if}
       <div class="map-frame">
@@ -504,7 +505,8 @@
       {#if coordinationError}
         <div class="error-banner">
           Liderança e presença indisponíveis: {coordinationError}. Confira se o
-          script backend/migrations/lideranca.sql foi aplicado no banco.
+          backend está rodando e se o banco foi criado pelo docker compose
+          (script 002_lideranca.sql).
         </div>
       {/if}
 

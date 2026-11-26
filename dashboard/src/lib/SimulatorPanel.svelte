@@ -124,9 +124,8 @@
 
   {#if $simAvailable === false}
     <div class="empty-state">
-      Simulador desligado. Na raiz do repositório, gere com
-      <code>.\gradlew.bat -p simulator installDist</code> e inicie com
-      <code>simulator\build\install\rescuenet-simulator\bin\rescuenet-simulator.bat</code>.
+      Simulador desligado. Na raiz do repositório, inicie com
+      <code>.\gradlew.bat -p simulator run</code>.
     </div>
   {:else if $simAvailable}
     <div class="sim-form">
@@ -160,7 +159,9 @@
         Pontuação
         <strong>{previewScore === null ? '—' : previewScore.toFixed(2)}</strong>
         {#if validInput && battery < MIN_BATTERY}
-          <span class="sim-warning">inelegível (bateria abaixo de {MIN_BATTERY}%)</span>
+          <span class="sim-warning">
+            bateria abaixo de {MIN_BATTERY}%: só lidera se nenhum nó tiver bateria suficiente
+          </span>
         {/if}
       </div>
 
@@ -207,7 +208,9 @@
                 <td>
                   {node.score.toFixed(2)}
                   {#if !node.eligible}
-                    <small class="sim-warning">inelegível</small>
+                    <small class="sim-warning" title="Só lidera se nenhum nó tiver bateria suficiente">
+                      bateria baixa
+                    </small>
                   {/if}
                 </td>
                 <td>

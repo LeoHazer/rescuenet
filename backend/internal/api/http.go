@@ -306,7 +306,7 @@ func (h *Handler) latestLocations(w http.ResponseWriter, r *http.Request) {
 
 // latestNodeLocations devolve a última posição de cada aparelho, por
 // (team_id, node_id). Linhas sem node_id (APKs antigos ou registros
-// anteriores à migração localizacao_por_no.sql) ficam de fora, pois não
+// anteriores à migração 003_localizacao_por_no.sql) ficam de fora, pois não
 // identificam um aparelho; elas continuam em /api/locations/latest.
 // O node_id é serializado como texto (inteiro de 64 bits, acima de 2^53).
 func (h *Handler) latestNodeLocations(w http.ResponseWriter, r *http.Request) {

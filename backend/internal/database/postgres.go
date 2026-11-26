@@ -4,48 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net"
-	"net/url"
-	"os"
+	"log"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
-// envOrDefault returns an environment variable or its default value.
-func envOrDefault(key, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
-	}
-	return value
-}
+// Conexão fixa com o PostgreSQL do docker-compose.yml da raiz do projeto.
+// Projeto acadêmico de demonstração: os valores ficam no código de propósito.
+// A porta 5433 evita conflito com um PostgreSQL já instalado no Windows.
+const connectionString = "postgres://rescuenet:rescuenet@127.0.0.1:5433/rescuenet?sslmode=disable"
 
-// Open establishes and verifies a PostgreSQL connection.
+const (
+	connectAttempts      = 30
+	delayBetweenAttempts = 2 * time.Second
+)
+
+// Open conecta ao PostgreSQL. Se o banco ainda estiver iniciando (por
+// exemplo, logo após "docker compose up"), tenta novamente por até um minuto.
 func Open() (*sql.DB, error) {
-	password := os.Getenv("RESCUENET_DB_PASSWORD")
-
-	if password == "" {
-		return nil, fmt.Errorf("RESCUENET_DB_PASSWORD environment variable is not set")
-	}
-
-	user := envOrDefault("RESCUENET_DB_USER", "rescuenet_app")
-	host := envOrDefault("RESCUENET_DB_HOST", "127.0.0.1")
-	port := envOrDefault("RESCUENET_DB_PORT", "5432")
-	dbName := envOrDefault("RESCUENET_DB_NAME", "rescuenet")
-
-	connectionURL := &url.URL{
-		Scheme: "postgres",
-		User:   url.UserPassword(user, password),
-		Host:   net.JoinHostPort(host, port),
-		Path:   dbName,
-	}
-
-	query := connectionURL.Query()
-	query.Set("sslmode", "disable")
-	connectionURL.RawQuery = query.Encode()
-
-	db, err := sql.Open("postgres", connectionURL.String())
+	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
 		return nil, fmt.Errorf("opening PostgreSQL connection: %w", err)
 	}
@@ -54,13 +32,25 @@ func Open() (*sql.DB, error) {
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(30 * time.Minute)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
 
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("connecting to PostgreSQL: %w", err)
+		if err == nil {
+			return db, nil
+		}
+
+		if attempt == connectAttempts {
+			db.Close()
+			return nil, fmt.Errorf(
+				"connecting to PostgreSQL (o banco está rodando? use \"docker compose up -d\" na raiz do projeto): %w",
+				err,
+			)
+		}
+
+		log.Printf("[DATABASE] Banco indisponível, nova tentativa em %s (%d/%d): %v",
+			delayBetweenAttempts, attempt, connectAttempts, err)
+		time.Sleep(delayBetweenAttempts)
 	}
-
-	return db, nil
 }
