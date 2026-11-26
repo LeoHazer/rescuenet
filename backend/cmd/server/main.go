@@ -20,8 +20,22 @@ const (
 	brokerURL     = "tcp://127.0.0.1:1883"
 	topic         = "rescuenet/teams/+/location"
 	presenceTopic = "rescuenet/teams/+/nodes/+/presence"
+	electionTopic = "rescuenet/teams/+/election"
 	httpAddr      = "127.0.0.1:8080"
 )
+
+// subscribe assina um tópico com QoS 1 e registra o resultado no log.
+func subscribe(client pahomqtt.Client, name, topic string, handler pahomqtt.MessageHandler) {
+	token := client.Subscribe(topic, 1, handler)
+
+	if !token.WaitTimeout(10 * time.Second) {
+		log.Printf("[ERRO] Timeout ao assinar o tópico de %s.", name)
+	} else if err := token.Error(); err != nil {
+		log.Printf("[ERRO] Falha ao assinar o tópico de %s: %v", name, err)
+	} else {
+		log.Printf("[MQTT] Inscrito no tópico: %s", topic)
+	}
+}
 
 func main() {
 	log.Println("========================================")
@@ -66,29 +80,17 @@ func main() {
 	options.SetOnConnectHandler(func(client pahomqtt.Client) {
 		log.Println("[MQTT] Conectado ao broker.")
 
-		locationToken := client.Subscribe(topic, 1, func(client pahomqtt.Client, message pahomqtt.Message) {
+		subscribe(client, "localização", topic, func(client pahomqtt.Client, message pahomqtt.Message) {
 			rescuemqtt.HandleLocationMessage(db, message.Topic(), message.Payload())
 		})
 
-		if !locationToken.WaitTimeout(10 * time.Second) {
-			log.Println("[ERRO] Timeout ao assinar o tópico de localização.")
-		} else if err := locationToken.Error(); err != nil {
-			log.Printf("[ERRO] Falha ao assinar o tópico de localização: %v", err)
-		} else {
-			log.Printf("[MQTT] Inscrito no tópico: %s", topic)
-		}
-
-		presenceToken := client.Subscribe(presenceTopic, 1, func(client pahomqtt.Client, message pahomqtt.Message) {
+		subscribe(client, "presença", presenceTopic, func(client pahomqtt.Client, message pahomqtt.Message) {
 			rescuemqtt.HandlePresenceMessage(db, message.Topic(), message.Payload(), message.Retained())
 		})
 
-		if !presenceToken.WaitTimeout(10 * time.Second) {
-			log.Println("[ERRO] Timeout ao assinar o tópico de presença.")
-		} else if err := presenceToken.Error(); err != nil {
-			log.Printf("[ERRO] Falha ao assinar o tópico de presença: %v", err)
-		} else {
-			log.Printf("[MQTT] Inscrito no tópico: %s", presenceTopic)
-		}
+		subscribe(client, "eleição", electionTopic, func(client pahomqtt.Client, message pahomqtt.Message) {
+			rescuemqtt.HandleElectionMessage(db, message.Topic(), message.Payload())
+		})
 	})
 
 	options.SetConnectionLostHandler(func(client pahomqtt.Client, err error) {

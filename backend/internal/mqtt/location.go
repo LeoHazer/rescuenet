@@ -10,8 +10,13 @@ import (
 )
 
 // LocationMessage representa uma localizacao recebida do aplicativo Android.
+//
+// NodeID identifica o aparelho que enviou a posição. É opcional porque
+// versões antigas do aplicativo não o enviam; nesse caso ele fica nil e a
+// coluna locations.node_id recebe NULL.
 type LocationMessage struct {
 	TeamID    int     `json:"team_id"`
+	NodeID    *int64  `json:"node_id,omitempty"`
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
 	Accuracy  float64 `json:"accuracy"`
@@ -23,6 +28,10 @@ type LocationMessage struct {
 func (m LocationMessage) Validate() error {
 	if m.TeamID <= 0 {
 		return fmt.Errorf("team_id deve ser maior que zero")
+	}
+
+	if m.NodeID != nil && *m.NodeID <= 0 {
+		return fmt.Errorf("node_id, quando informado, deve ser maior que zero")
 	}
 
 	if m.Latitude < -90 || m.Latitude > 90 {
@@ -48,21 +57,43 @@ func (m LocationMessage) Validate() error {
 	return nil
 }
 
-// HandleLocationMessage interpreta, valida e persiste uma mensagem MQTT.
-func HandleLocationMessage(db *sql.DB, topic string, payload []byte) {
+// ParseLocationMessage decodifica e valida o payload JSON de uma localização.
+func ParseLocationMessage(payload []byte) (LocationMessage, error) {
 	var location LocationMessage
 
 	if err := json.Unmarshal(payload, &location); err != nil {
-		log.Printf("[ERRO] JSON invalido recebido em %s: %v", topic, err)
-		return
+		return LocationMessage{}, fmt.Errorf("JSON invalido: %w", err)
 	}
 
 	if err := location.Validate(); err != nil {
+		return LocationMessage{}, err
+	}
+
+	return location, nil
+}
+
+// nodeIDLabel formata o identificador do aparelho para o log.
+func nodeIDLabel(nodeID *int64) string {
+	if nodeID == nil {
+		return "não informado"
+	}
+	return fmt.Sprintf("%d", *nodeID)
+}
+
+// HandleLocationMessage interpreta, valida e persiste uma mensagem MQTT.
+func HandleLocationMessage(db *sql.DB, topic string, payload []byte) {
+	location, err := ParseLocationMessage(payload)
+	if err != nil {
 		log.Printf("[ERRO] Localizacao invalida em %s: %v", topic, err)
 		return
 	}
 
 	recordedAt := time.Unix(location.Timestamp, 0).UTC()
+
+	nodeID := sql.NullInt64{}
+	if location.NodeID != nil {
+		nodeID = sql.NullInt64{Int64: *location.NodeID, Valid: true}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -70,9 +101,10 @@ func HandleLocationMessage(db *sql.DB, topic string, payload []byte) {
 	result, err := db.ExecContext(
 		ctx,
 		`INSERT INTO locations
-            (team_id, latitude, longitude, accuracy, battery, recorded_at)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+            (team_id, node_id, latitude, longitude, accuracy, battery, recorded_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 		location.TeamID,
+		nodeID,
 		location.Latitude,
 		location.Longitude,
 		location.Accuracy,
@@ -95,6 +127,7 @@ func HandleLocationMessage(db *sql.DB, topic string, payload []byte) {
 	log.Println("[LOCALIZACAO RECEBIDA E SALVA]")
 	log.Printf("Topico:     %s", topic)
 	log.Printf("Equipe:     %d", location.TeamID)
+	log.Printf("Aparelho:   %s", nodeIDLabel(location.NodeID))
 	log.Printf("Latitude:   %.6f", location.Latitude)
 	log.Printf("Longitude:  %.6f", location.Longitude)
 	log.Printf("Precisao:   %.2f metros", location.Accuracy)
