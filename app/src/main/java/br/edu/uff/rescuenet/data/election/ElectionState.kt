@@ -80,6 +80,16 @@ class ElectionEpochTracker(
         return newEpoch
     }
 
+    /**
+     * Registra um contador visto na rede (por exemplo, em um HELLO) sem
+     * adotar a época. Assim, a próxima eleição local começa acima dela.
+     */
+    fun observeCounter(counter: Long) {
+        if (counter > highestObservedCounter) {
+            highestObservedCounter = counter
+        }
+    }
+
     fun observe(epoch: ElectionEpoch): Boolean {
         val previousEpoch = currentEpoch
 
@@ -97,29 +107,35 @@ class ElectionEpochTracker(
     }
 }
 
+/**
+ * Conta, para cada desafiante, quantas avaliações seguidas ele teve a
+ * vantagem exigida sobre o coordenador atual.
+ *
+ * O contador é por desafiante: com três ou mais nós, os HELLOs se
+ * intercalam, e o HELLO de um nó mais fraco não pode zerar a contagem de
+ * outro que de fato é melhor (antes, um contador único era zerado e a
+ * troca nunca acontecia).
+ */
 class HysteresisTracker {
 
     private var currentNodeId: Long? = null
-    private var challengerNodeId: Long? = null
-    private var consecutiveAdvantages: Int = 0
+    private val consecutiveAdvantages = mutableMapOf<Long, Int>()
 
     fun reset() {
         currentNodeId = null
-        challengerNodeId = null
-        consecutiveAdvantages = 0
+        consecutiveAdvantages.clear()
     }
 
     fun observe(
         current: ElectionCandidate,
         challenger: ElectionCandidate
     ): Boolean {
-        if (!challenger.isEligible) {
-            reset()
+        if (challenger.nodeId == current.nodeId) {
             return false
         }
 
-        if (challenger.nodeId == current.nodeId) {
-            reset()
+        if (!challenger.isEligible) {
+            consecutiveAdvantages.remove(challenger.nodeId)
             return false
         }
 
@@ -128,27 +144,23 @@ class HysteresisTracker {
             return true
         }
 
+        if (currentNodeId != current.nodeId) {
+            reset()
+            currentNodeId = current.nodeId
+        }
+
         val hasRequiredAdvantage =
             challenger.score >= current.score +
                 AdaptiveBullyPolicy.HYSTERESIS_MARGIN
 
         if (!hasRequiredAdvantage) {
-            reset()
+            consecutiveAdvantages.remove(challenger.nodeId)
             return false
         }
 
-        if (
-            currentNodeId != current.nodeId ||
-            challengerNodeId != challenger.nodeId
-        ) {
-            currentNodeId = current.nodeId
-            challengerNodeId = challenger.nodeId
-            consecutiveAdvantages = 1
-        } else {
-            consecutiveAdvantages++
-        }
+        val count = (consecutiveAdvantages[challenger.nodeId] ?: 0) + 1
+        consecutiveAdvantages[challenger.nodeId] = count
 
-        return consecutiveAdvantages >=
-            AdaptiveBullyPolicy.REQUIRED_CONSECUTIVE_ADVANTAGES
+        return count >= AdaptiveBullyPolicy.REQUIRED_CONSECUTIVE_ADVANTAGES
     }
 }

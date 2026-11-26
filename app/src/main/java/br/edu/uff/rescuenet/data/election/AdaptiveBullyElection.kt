@@ -46,6 +46,13 @@ class AdaptiveBullyElection(
         require(heartbeatTimeoutMillis > 0L)
     }
 
+    /** Quantidade de outros nós conhecidos e ainda não expirados. */
+    val knownCandidateCount: Int
+        get() = candidates.size
+
+    fun isKnownCandidate(nodeId: Long): Boolean =
+        candidates.containsKey(nodeId)
+
     fun updateLocalCandidate(message: HelloMessage) {
         require(message.teamId == teamId)
         require(message.nodeId == localNodeId)
@@ -63,6 +70,21 @@ class AdaptiveBullyElection(
             message = message,
             receivedAtMillis = receivedAtMillis
         )
+
+        // Um nó que entra (ou reconecta) aprende a época da rede pelo HELLO.
+        // Se precisar eleger, usará uma época maior que a do coordenador
+        // atual, e o anúncio dele não será descartado como antigo.
+        epochTracker.observeCounter(message.epoch.counter)
+    }
+
+    /**
+     * Eleição disparada após a janela de descoberta. Só acontece se o nó
+     * ainda não reconheceu um coordenador; caso contrário, a entrada de um
+     * nó derrubaria a liderança atual e ignoraria a histerese.
+     */
+    fun startInitialElection(nowMillis: Long): List<ElectionMessage> {
+        if (role != ElectionRole.IDLE) return emptyList()
+        return beginElection(nowMillis)
     }
 
     fun evaluateCoordinatorChallenge(
@@ -148,16 +170,19 @@ class AdaptiveBullyElection(
             return becomeCoordinator(nowMillis)
         }
 
-        return higherCandidates.map { candidate ->
+        higherCandidates.forEach { pendingResponses.add(it.nodeId) }
+
+        // O tópico é compartilhado: uma única mensagem alcança todos os nós
+        // de prioridade maior. Cópias repetidas fariam cada um deles
+        // reiniciar a própria eleição várias vezes.
+        return listOf(
             ElectionRequestMessage(
                 teamId = teamId,
                 nodeId = localNodeId,
                 epoch = epoch,
                 timestamp = nowMillis / 1000L
-            ).also {
-                pendingResponses.add(candidate.nodeId)
-            }
-        }
+            )
+        )
     }
 
     fun receive(
@@ -246,21 +271,11 @@ class AdaptiveBullyElection(
         message: CoordinatorMessage,
         nowMillis: Long
     ): List<ElectionMessage> {
-        val knownCoordinator = candidates[message.coordinatorNodeId]?.message
-            ?: return emptyList()
+        if (acceptCoordinator(message.coordinatorNodeId, message.epoch, nowMillis)) {
+            return emptyList()
+        }
 
-        if (!isEligible(knownCoordinator)) return emptyList()
-        if (!epochTracker.observe(message.epoch)) return emptyList()
-
-        currentEpoch = message.epoch
-        role = ElectionRole.FOLLOWER
-        coordinatorNodeId = message.coordinatorNodeId
-        pendingResponses.clear()
-        awaitingCoordinator = false
-        electionDeadlineMillis = null
-        coordinatorLastHeartbeatMillis = nowMillis
-
-        return emptyList()
+        return reannounceIfOlder(message.epoch, nowMillis)
     }
 
     private fun handleHeartbeat(
@@ -269,33 +284,79 @@ class AdaptiveBullyElection(
     ): List<ElectionMessage> {
         if (message.nodeId != message.coordinatorNodeId) return emptyList()
 
-        if (role == ElectionRole.IDLE) {
-            pruneExpiredCandidates(nowMillis)
-
-            val knownCoordinator =
-                candidates[message.coordinatorNodeId]?.message
-                    ?: return emptyList()
-
-            if (!isEligible(knownCoordinator)) return emptyList()
-            if (!epochTracker.observe(message.epoch)) return emptyList()
-
-            currentEpoch = message.epoch
-            role = ElectionRole.FOLLOWER
-            coordinatorNodeId = message.coordinatorNodeId
-            pendingResponses.clear()
-            awaitingCoordinator = false
-            electionDeadlineMillis = null
+        // Caso comum: heartbeat do coordenador já seguido.
+        if (role == ElectionRole.FOLLOWER &&
+            message.coordinatorNodeId == coordinatorNodeId &&
+            message.epoch == currentEpoch
+        ) {
             coordinatorLastHeartbeatMillis = nowMillis
-
             return emptyList()
         }
 
-        if (role != ElectionRole.FOLLOWER) return emptyList()
-        if (message.coordinatorNodeId != coordinatorNodeId) return emptyList()
-        if (message.epoch != currentEpoch) return emptyList()
+        // Heartbeat de um coordenador com época mais nova: o nó entrou
+        // agora, perdeu o COORDINATOR (não retido) ou é um coordenador
+        // em conflito. Em todos os casos, a época mais nova prevalece.
+        if (acceptCoordinator(message.coordinatorNodeId, message.epoch, nowMillis)) {
+            return emptyList()
+        }
 
+        return reannounceIfOlder(message.epoch, nowMillis)
+    }
+
+    /**
+     * Adota [candidateNodeId] como coordenador se ele for conhecido,
+     * elegível e anunciar uma época mais nova que a local.
+     */
+    private fun acceptCoordinator(
+        candidateNodeId: Long,
+        epoch: ElectionEpoch,
+        nowMillis: Long
+    ): Boolean {
+        if (candidateNodeId == localNodeId) return false
+
+        pruneExpiredCandidates(nowMillis)
+
+        val knownCoordinator = candidates[candidateNodeId]?.message
+            ?: return false
+
+        if (!isEligible(knownCoordinator)) return false
+        if (!epochTracker.observe(epoch)) return false
+
+        currentEpoch = epoch
+        role = ElectionRole.FOLLOWER
+        coordinatorNodeId = candidateNodeId
+        hysteresisTracker.reset()
+        pendingResponses.clear()
+        awaitingCoordinator = false
+        electionDeadlineMillis = null
         coordinatorLastHeartbeatMillis = nowMillis
-        return emptyList()
+
+        return true
+    }
+
+    /**
+     * Dois coordenadores ao mesmo tempo (split-brain): o de época mais
+     * antiga é avisado novamente de quem lidera, para que ceda. Sem isso,
+     * cada um ignoraria os heartbeats do outro indefinidamente.
+     */
+    private fun reannounceIfOlder(
+        otherEpoch: ElectionEpoch,
+        nowMillis: Long
+    ): List<ElectionMessage> {
+        if (role != ElectionRole.COORDINATOR) return emptyList()
+
+        val epoch = currentEpoch ?: return emptyList()
+        if (otherEpoch >= epoch) return emptyList()
+
+        return listOf(
+            CoordinatorMessage(
+                teamId = teamId,
+                nodeId = localNodeId,
+                epoch = epoch,
+                timestamp = nowMillis / 1000L,
+                coordinatorNodeId = localNodeId
+            )
+        )
     }
 
     fun onElectionTimeout(nowMillis: Long): List<ElectionMessage> {
@@ -320,6 +381,11 @@ class AdaptiveBullyElection(
         if (nowMillis - lastHeartbeat <= heartbeatTimeoutMillis) {
             return emptyList()
         }
+
+        // O coordenador parou de responder: não faz sentido enviar ELECTION
+        // para ele e esperar um OK que não virá. Se ele estiver vivo, o
+        // próximo HELLO o recoloca entre os candidatos.
+        coordinatorNodeId?.let { candidates.remove(it) }
 
         return beginElection(nowMillis)
     }

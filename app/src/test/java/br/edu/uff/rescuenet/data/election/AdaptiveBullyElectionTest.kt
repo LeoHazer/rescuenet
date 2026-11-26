@@ -137,9 +137,11 @@ class AdaptiveBullyElectionTest {
 
         val messages = machine.onCoordinatorTimeout(16_001L)
 
-        assertEquals(ElectionRole.ELECTING, machine.role)
-        assertNull(machine.coordinatorNodeId)
-        assertTrue(messages.any { it is ElectionRequestMessage })
+        // O coordenador expirado é descartado; sem outro candidato maior,
+        // o nó local assume na nova eleição.
+        assertEquals(ElectionRole.COORDINATOR, machine.role)
+        assertEquals(localNodeId, machine.coordinatorNodeId)
+        assertTrue(messages.any { it is CoordinatorMessage })
     }
 
     @Test
