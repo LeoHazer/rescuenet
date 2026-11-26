@@ -177,6 +177,51 @@ class ElectionNodeRuntimeTest {
     }
 
     @Test
+    fun lowBatteryCoordinatorHandsOverQuickly() {
+        val net = Network()
+        net.add(1001, level = 90.0)
+        net.add(1002, level = 50.0)
+        net.advance(10)
+
+        net.node(1001).profile = NodeProfile(level = 90.0, battery = 10.0)
+        // O próximo HELLO do seguidor elegível já dispara a troca (até 5 s
+        // para o novo HELLO do líder + até 5 s para o HELLO do seguidor).
+        net.advance(11)
+
+        assertEquals(listOf(1002L), net.coordinators())
+    }
+
+    @Test
+    fun singleLowBatteryNodeLeadsUntilEligibleNodeArrives() {
+        val net = Network()
+        net.add(1001, level = 90.0, battery = 10.0)
+        net.advance(10)
+        assertEquals(listOf(1001L), net.coordinators())
+
+        net.add(1002, level = 40.0, battery = 80.0)
+        net.advance(3)
+
+        assertEquals(listOf(1002L), net.coordinators())
+        assertEquals(1002L, net.node(1001).coordinatorNodeId)
+    }
+
+    @Test
+    fun severalLowBatteryNodesElectOneLeaderWithoutElectionStorm() {
+        val net = Network()
+        net.add(1001, level = 40.0, battery = 10.0)
+        net.add(1002, level = 90.0, battery = 10.0)
+        net.add(1003, level = 60.0, battery = 5.0)
+        net.advance(15)
+        assertEquals(listOf(1002L), net.coordinators())
+
+        val epoch = net.node(1002).currentEpoch
+        net.advance(30)
+
+        assertEquals(listOf(1002L), net.coordinators())
+        assertEquals(epoch, net.node(1002).currentEpoch)
+    }
+
+    @Test
     fun crashedCoordinatorReturnsAsFollower() {
         val net = Network()
         net.add(1001, level = 95.0)

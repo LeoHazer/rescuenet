@@ -100,6 +100,30 @@ class AdaptiveBullyPolicyTest {
     }
 
     @Test
+    fun initialElection_fallsBackToLowBatteryCandidateWhenNoneIsEligible() {
+        val lowBattery = candidate(nodeId = 10L, battery = 10.0)
+        val disconnected = candidate(nodeId = 20L, mqttConnected = false)
+
+        val winner = AdaptiveBullyPolicy.selectInitialCoordinator(
+            listOf(lowBattery, disconnected)
+        )
+
+        assertEquals(10L, winner?.nodeId)
+    }
+
+    @Test
+    fun initialElection_prefersEligibleOverLowBatteryWithHigherScore() {
+        val eligible = candidate(nodeId = 10L, score = 50.0)
+        val lowBattery = candidate(nodeId = 20L, score = 95.0, battery = 10.0)
+
+        val winner = AdaptiveBullyPolicy.selectInitialCoordinator(
+            listOf(eligible, lowBattery)
+        )
+
+        assertEquals(10L, winner?.nodeId)
+    }
+
+    @Test
     fun initialElection_returnsNullWhenNoCandidateIsEligible() {
         val node = candidate(nodeId = 10L, mqttConnected = false)
 

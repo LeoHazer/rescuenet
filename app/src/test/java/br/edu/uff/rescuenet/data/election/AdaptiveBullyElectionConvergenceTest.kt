@@ -109,6 +109,93 @@ class AdaptiveBullyElectionConvergenceTest {
         assertEquals(0, machine.knownCandidateCount)
     }
 
+    /** Nó com bom desempenho geral, mas bateria abaixo do mínimo (15%). */
+    private fun lowBatteryHello(nodeId: Long, level: Double = 90.0, battery: Double = 10.0) =
+        HelloMessage(
+            teamId = teamId,
+            nodeId = nodeId,
+            epoch = ElectionEpoch(1L, nodeId),
+            timestamp = 1L,
+            metrics = ElectionMetrics(
+                connectionStability = level,
+                battery = battery,
+                availability = level,
+                connectivity = level,
+                computationalResources = level,
+                dataEfficiency = level
+            )
+        )
+
+    @Test
+    fun singleLowBatteryNodeBecomesCoordinator() {
+        val machine = election()
+        machine.updateLocalCandidate(lowBatteryHello(localNodeId))
+
+        val messages = machine.startInitialElection(6_000L)
+
+        assertEquals(ElectionRole.COORDINATOR, machine.role)
+        assertTrue(messages.single() is CoordinatorMessage)
+    }
+
+    @Test
+    fun eligibleNodeOutranksLowBatteryNodeWithHigherScore() {
+        // O nó remoto tem pontuação maior (77,5 contra 50), mas está sem bateria.
+        val machine = election()
+        machine.updateLocalCandidate(hello(localNodeId, 50.0))
+        machine.receive(lowBatteryHello(remoteNodeId), 1_000L)
+
+        val messages = machine.beginElection(2_000L)
+
+        assertEquals(ElectionRole.COORDINATOR, machine.role)
+        assertTrue(messages.single() is CoordinatorMessage)
+    }
+
+    @Test
+    fun lowBatteryCoordinatorHandsOverImmediatelyToEligibleNewcomer() {
+        val machine = election()
+        machine.updateLocalCandidate(lowBatteryHello(localNodeId))
+        machine.startInitialElection(6_000L)
+        assertEquals(ElectionRole.COORDINATOR, machine.role)
+
+        // Um nó elegível chega, mesmo com pontuação menor e sem margem de 10.
+        machine.receive(hello(remoteNodeId, 40.0), 10_000L)
+        val messages = machine.evaluateCoordinatorChallenge(remoteNodeId, 10_000L)
+
+        assertEquals(ElectionRole.ELECTING, machine.role)
+        assertTrue(messages.single() is ElectionRequestMessage)
+    }
+
+    @Test
+    fun eligibleNodeAnswersElectionFromLowBatteryCoordinatorAndTakesOver() {
+        val machine = election()
+        machine.updateLocalCandidate(hello(localNodeId, 40.0))
+        machine.receive(lowBatteryHello(remoteNodeId), 1_000L)
+
+        val request = ElectionRequestMessage(
+            teamId = teamId,
+            nodeId = remoteNodeId,
+            epoch = ElectionEpoch(3L, remoteNodeId),
+            timestamp = 2L
+        )
+        val messages = machine.receive(request, 2_000L)
+
+        assertEquals(ElectionRole.COORDINATOR, machine.role)
+        assertTrue(messages[0] is ElectionOkMessage)
+        assertTrue(messages[1] is CoordinatorMessage)
+    }
+
+    @Test
+    fun nodeFollowsLowBatteryCoordinatorWhenItIsTheOnlyOption() {
+        val machine = election()
+        machine.updateLocalCandidate(lowBatteryHello(localNodeId, level = 50.0))
+        machine.receive(lowBatteryHello(remoteNodeId, level = 90.0), 1_000L)
+
+        machine.receive(heartbeat(remoteNodeId, ElectionEpoch(2L, remoteNodeId)), 1_000L)
+
+        assertEquals(ElectionRole.FOLLOWER, machine.role)
+        assertEquals(remoteNodeId, machine.coordinatorNodeId)
+    }
+
     @Test
     fun weakerHelloInBetweenDoesNotResetStrongerChallenger() {
         val machine = election()

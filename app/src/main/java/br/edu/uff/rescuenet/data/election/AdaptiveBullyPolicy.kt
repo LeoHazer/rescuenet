@@ -64,20 +64,34 @@ object AdaptiveBullyPolicy {
         return round(weightedScore * 100.0) / 100.0
     }
 
-    fun isEligible(candidate: ElectionCandidate): Boolean {
+    /** Conectado e disponível: requisito mínimo para participar da eleição. */
+    fun canParticipate(candidate: ElectionCandidate): Boolean {
         return candidate.nodeId > 0L &&
             candidate.mqttConnected &&
-            candidate.available &&
+            candidate.available
+    }
+
+    /**
+     * Elegível para liderar com prioridade: além de participar, tem bateria
+     * mínima. Um nó abaixo do mínimo só lidera se nenhum nó for elegível.
+     */
+    fun isEligible(candidate: ElectionCandidate): Boolean {
+        return canParticipate(candidate) &&
             candidate.metrics.battery >= MINIMUM_BATTERY_PERCENT
     }
 
+    /**
+     * Mesma ordem usada pela eleição: elegíveis primeiro, depois maior
+     * pontuação e, no empate, maior nodeId.
+     */
     fun selectInitialCoordinator(
         candidates: Collection<ElectionCandidate>
     ): ElectionCandidate? {
         return candidates
-            .filter { it.isEligible }
+            .filter { canParticipate(it) }
             .maxWithOrNull(
-                compareBy<ElectionCandidate> { it.score }
+                compareBy<ElectionCandidate> { it.isEligible }
+                    .thenBy { it.score }
                     .thenBy { it.nodeId }
             )
     }

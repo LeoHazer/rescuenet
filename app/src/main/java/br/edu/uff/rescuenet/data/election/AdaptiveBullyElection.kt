@@ -123,16 +123,9 @@ class AdaptiveBullyElection(
 
         hysteresisTracker.reset()
 
-        if (!currentCandidate.isEligible) {
-            role = ElectionRole.IDLE
-            coordinatorNodeId = null
-            coordinatorLastHeartbeatMillis = null
-            electionDeadlineMillis = null
-            pendingResponses.clear()
-            awaitingCoordinator = false
-            return emptyList()
-        }
-
+        // Também quando o coordenador atual está sem bateria: em vez de sair
+        // em silêncio (os outros só agiriam após o timeout de heartbeat), ele
+        // abre a eleição e o nó elegível assume na mesma rodada.
         return beginElection(nowMillis)
     }
 
@@ -146,8 +139,10 @@ class AdaptiveBullyElection(
         nowMillis: Long,
         synchronizedEpoch: ElectionEpoch? = null
     ): List<ElectionMessage> {
+        // Um nó sem bateria suficiente também pode se candidatar: a prioridade
+        // (hasHigherPriority) coloca qualquer nó elegível à frente dele, então
+        // ele só vence se não houver nó elegível conhecido.
         val local = localHello ?: return emptyList()
-        if (!isEligible(local)) return emptyList()
 
         hysteresisTracker.reset()
 
@@ -162,7 +157,7 @@ class AdaptiveBullyElection(
 
         val higherCandidates = candidates.values
             .map { it.message }
-            .filter { isEligible(it) && hasHigherPriority(it, local) }
+            .filter { hasHigherPriority(it, local) }
 
         electionDeadlineMillis = nowMillis + electionTimeoutMillis
 
@@ -222,12 +217,14 @@ class AdaptiveBullyElection(
         nowMillis: Long
     ): List<ElectionMessage> {
         val local = localHello ?: return emptyList()
-        if (!isEligible(local)) return emptyList()
 
         val sender = candidates[message.nodeId]?.message
             ?: return emptyList()
 
-        if (!isEligible(sender) || !hasHigherPriority(local, sender)) {
+        // A elegibilidade já entra em hasHigherPriority: um nó elegível sempre
+        // responde a um nó sem bateria, e entre dois nós sem bateria vale a
+        // pontuação (para haver líder quando nenhum nó é elegível).
+        if (!hasHigherPriority(local, sender)) {
             return emptyList()
         }
 
@@ -304,8 +301,12 @@ class AdaptiveBullyElection(
     }
 
     /**
-     * Adota [candidateNodeId] como coordenador se ele for conhecido,
-     * elegível e anunciar uma época mais nova que a local.
+     * Adota [candidateNodeId] como coordenador se ele for conhecido e
+     * anunciar uma época mais nova que a local.
+     *
+     * Não se exige bateria suficiente: um coordenador sem bateria só existe
+     * quando não havia nó elegível, e ele mesmo passa a liderança ao
+     * receber o HELLO de um nó elegível (evaluateCoordinatorChallenge).
      */
     private fun acceptCoordinator(
         candidateNodeId: Long,
@@ -316,10 +317,8 @@ class AdaptiveBullyElection(
 
         pruneExpiredCandidates(nowMillis)
 
-        val knownCoordinator = candidates[candidateNodeId]?.message
-            ?: return false
-
-        if (!isEligible(knownCoordinator)) return false
+        // Só segue coordenadores já anunciados por HELLO e não expirados.
+        if (!candidates.containsKey(candidateNodeId)) return false
         if (!epochTracker.observe(epoch)) return false
 
         currentEpoch = epoch
@@ -436,10 +435,21 @@ class AdaptiveBullyElection(
         ).isEligible
     }
 
+    /**
+     * Ordem de prioridade: (1) elegível (bateria >= 15%) antes de não
+     * elegível; (2) maior pontuação; (3) maior nodeId.
+     */
     private fun hasHigherPriority(
         first: HelloMessage,
         second: HelloMessage
     ): Boolean {
+        val firstEligible = isEligible(first)
+        val secondEligible = isEligible(second)
+
+        if (firstEligible != secondEligible) {
+            return firstEligible
+        }
+
         if (first.score != second.score) {
             return first.score > second.score
         }
