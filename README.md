@@ -22,13 +22,13 @@ O RescueNet é composto por três módulos principais:
 
 - Comunicação entre dispositivos por MQTT.
 - Identificação persistente dos nós da rede.
-- Publicação de localização e estado de presença.
+- Publicação automática e periódica da localização GPS (a cada ~10 s) e do estado de presença.
 - Detecção de desconexão por Last Will and Testament (LWT).
 - Histórico de presença dos nós.
 - Eleição adaptativa de coordenador baseada em critérios de desempenho e disponibilidade.
 - Mecanismos de estabilidade e prevenção de trocas desnecessárias de coordenador.
 - Backend com API REST e persistência PostgreSQL.
-- Dashboard web para visualização das informações.
+- Dashboard web para visualização das informações, com um marcador por aparelho no mapa e o coordenador ativo destacado.
 
 ### Estrutura do repositório
 
@@ -39,6 +39,8 @@ RescueNet/
 │   ├── cmd/server/       # Inicialização do servidor
 │   └── internal/         # API, MQTT e banco de dados
 ├── dashboard/            # Interface web Svelte
+├── simulator/            # Simulador de nós (JVM), controlado pelo dashboard
+├── tools/                # Nó simulado em Python para cenários roteirizados
 ├── gradle/               # Configuração do Gradle Wrapper
 ├── registros tecnicos/   # Documentação técnica versionada parcialmente
 ├── .gitignore
@@ -205,6 +207,20 @@ A senha não possui valor padrão e deve ser configurada no ambiente.
 
 O script SQL de criação e inicialização do schema deve ser obtido com a equipe responsável pelo banco, caso ainda não esteja disponível no repositório. Não tente iniciar o backend antes de preparar essas estruturas.
 
+Depois do schema base, aplique o script das tabelas de liderança (`team_leaders` e `leader_history`), usadas para exibir o coordenador atual no dashboard. O script é idempotente e concede as permissões ao usuário `rescuenet_app`, se ele existir:
+
+```powershell
+psql -h 127.0.0.1 -U postgres -d rescuenet -f backend/migrations/lideranca.sql
+```
+
+Aplique também o script da localização por aparelho. Ele adiciona a coluna `node_id` (anulável) à tabela `locations`, cria o índice `(team_id, node_id, recorded_at DESC)` e concede as permissões ao `rescuenet_app`, se ele existir. Também é idempotente:
+
+```powershell
+psql -h 127.0.0.1 -U postgres -d rescuenet -f backend/migrations/localizacao_por_no.sql
+```
+
+**Atenção:** o backend atual grava `node_id` em toda localização recebida. Sem esse script, as inserções falham com erro de coluna inexistente e as posições deixam de ser salvas.
+
 ### Configurando as variáveis de ambiente
 
 No PowerShell, defina as variáveis para a sessão atual:
@@ -312,10 +328,35 @@ Mantenha esse terminal aberto.
 |---|---|---|
 | GET | `/health` | Verifica o backend e a conexão com o banco |
 | GET | `/api/teams` | Lista as equipes |
-| GET | `/api/locations/latest` | Consulta as últimas localizações |
+| GET | `/api/locations/latest` | Última localização de cada equipe |
+| GET | `/api/nodes/locations/latest` | Última localização de cada aparelho, por `(team_id, node_id)` |
+| GET | `/api/nodes/{node_id}/locations` | Histórico de posições de um aparelho, da mais recente para a mais antiga (`?limit=1..200`, padrão 50) |
 | GET | `/api/teams/{id}/locations` | Consulta localizações de uma equipe |
 | GET | `/api/teams/{id}/presence` | Consulta presença dos nós |
 | GET | `/api/teams/{id}/presence/history` | Consulta histórico de presença |
+| GET | `/api/presence` | Presença atual de todos os dispositivos |
+| GET | `/api/leaders` | Coordenador atual de cada equipe e se está ativo |
+| GET | `/api/leaders/history` | Trocas de coordenador (`?limit=1..200`, padrão 20) |
+
+Em `/api/nodes/locations/latest`, `/api/nodes/{node_id}/locations`, `/api/presence`, `/api/leaders` e `/api/leaders/history`, `node_id` e `epoch_initiator_node_id` são enviados como texto, porque são inteiros de 64 bits e perderiam precisão como número em JavaScript.
+
+A rota `/api/nodes/locations/latest` ignora as localizações sem `node_id` (registros anteriores à migração ou enviados por versões antigas do aplicativo), pois elas não identificam um aparelho. Essas posições continuam disponíveis em `/api/locations/latest`. Exemplo de resposta (dados sintéticos):
+
+```json
+[
+  {
+    "id": 42,
+    "team_id": 1,
+    "node_id": "4611686018427387905",
+    "latitude": -22.5,
+    "longitude": -41.9,
+    "accuracy": 6.5,
+    "battery": 81,
+    "recorded_at": "2026-11-25T22:10:00Z"
+  }
+]
+```
+ Um coordenador é considerado ativo se anunciou liderança (COORDINATOR ou HEARTBEAT) nos últimos 20 segundos e sua presença não está `offline`.
 
 Exemplo de verificação pelo PowerShell:
 
@@ -425,6 +466,32 @@ Se o comando `adb` não for reconhecido, utilize o executável `adb.exe` localiz
 
 **Atenção:** essa configuração é voltada ao ambiente local com emulador. Para executar em um aparelho físico, será necessário adaptar o endereço do broker para um endereço IP acessível na rede local e configurar adequadamente o listener e o firewall do Mosquitto.
 
+### Localização automática
+
+- Ao abrir a tela, o GPS liga sozinho se a permissão de localização já tiver sido concedida. Na primeira execução, toque em **Ativar localização** para conceder a permissão.
+- Enquanto houver conexão com o broker e uma posição do GPS, o aplicativo publica a localização automaticamente, no máximo uma vez a cada 10 segundos. Ao (re)conectar, a posição já conhecida é enviada na hora.
+- O cartão **Localização** mostra, em texto discreto, o horário do último envio automático.
+- O botão **Enviar localização GPS real** continua disponível para um envio imediato.
+- Enquanto o rastreamento está ligado, um serviço em primeiro plano do tipo `location` mantém uma notificação ("Compartilhando localização com a central de operações"). Com ele, o envio continua com a tela bloqueada ou com o aplicativo em segundo plano. O serviço para quando o usuário interrompe a localização ou fecha o aplicativo.
+- No Android 13 ou superior, o aplicativo também pede a permissão de notificações. Se ela for negada, o serviço funciona do mesmo jeito, só sem a notificação visível.
+- No dashboard, a aba **Monitoramento** mostra o rastro das últimas 30 posições de cada aparelho e, para o aparelho selecionado, uma tabela com os últimos envios: horário, intervalo até o envio anterior, deslocamento, precisão e bateria. Intervalos acima de 30 s aparecem destacados como lacuna. A aba **Visão geral** mostra só a última posição de cada aparelho.
+
+O payload publicado inclui o `node_id` do aparelho, para que o dashboard mostre um marcador por aparelho:
+
+```json
+{
+  "team_id": 1,
+  "node_id": 4611686018427387905,
+  "latitude": -22.5,
+  "longitude": -41.9,
+  "accuracy": 6.5,
+  "battery": 81,
+  "timestamp": 1795650000
+}
+```
+
+O `node_id` é opcional para o backend: mensagens de versões antigas do aplicativo, sem esse campo, são gravadas com `node_id` nulo. Quando presente, ele precisa ser maior que zero.
+
 ---
 
 ## 9. Executando os testes automatizados
@@ -517,6 +584,16 @@ npm run build
 
 Se ambos terminarem sem erros, a validação do dashboard foi concluída.
 
+### 9.5. Testes do simulador de nós
+
+Na raiz do projeto:
+
+```powershell
+.\gradlew.bat -p simulator test
+```
+
+Os testes colocam vários nós para conversar por um barramento em memória, com relógio simulado, e cobrem eleição inicial, falha do coordenador, entrada de nós, histerese com vários seguidores, bateria baixa e retorno de um nó que caiu.
+
 ---
 
 ## 10. Testes de integração e funcionamento distribuído
@@ -561,6 +638,38 @@ Verifique a publicação do estado online e a atualização para offline quando 
 Consulte os endpoints de presença e histórico para confirmar que os eventos foram recebidos e persistidos no PostgreSQL.
 
 A validação distribuída deve ser feita com dois dispositivos efetivamente conectados ao mesmo broker MQTT. Testes unitários isolados não substituem esse cenário de integração.
+
+### 10.1. Simulador de nós pelo dashboard
+
+O simulador cria nós que participam da eleição como se fossem celulares: cada um tem a própria conexão MQTT, com LWT e presença, e executa **os mesmos arquivos de eleição do aplicativo** (o build do simulador compila `app/src/main/java/br/edu/uff/rescuenet/data/election` diretamente, sem cópia). Assim, os cenários de eleição podem ser demonstrados sem depender de vários aparelhos, e também misturando nós simulados com celulares reais.
+
+Com o broker, o backend e o dashboard em execução, gere e inicie o simulador a partir da raiz do projeto:
+
+```powershell
+.\gradlew.bat -p simulator installDist
+.\simulator\build\install\rescuenet-simulator\bin\rescuenet-simulator.bat
+```
+
+Por padrão, ele usa o broker em `127.0.0.1:1883`, a equipe 1 (a mesma do aplicativo) e expõe a API em `http://127.0.0.1:8090/sim`, acessada pelo dashboard pelo proxy `/sim` do Vite. Para outro broker ou equipe:
+
+```powershell
+.\simulator\build\install\rescuenet-simulator\bin\rescuenet-simulator.bat --broker 192.168.0.10:1883 --equipe 1 --porta 8090
+```
+
+Encerre com `Ctrl+C`: os nós publicam o LWT `offline` antes de sair.
+
+No dashboard, o painel **Nós simulados** fica na seção "Coordenação da operação", acima da tabela de dispositivos, onde os nós simulados aparecem com a etiqueta "simulado". Cada nó tem um **nível geral**, aplicado a estabilidade, disponibilidade, conectividade, recursos e eficiência de dados, e uma **bateria**. A pontuação resultante é `0,75 × nível + 0,25 × bateria`, e abaixo de 15% de bateria o nó fica inelegível. Os IDs são sequenciais (1001, 1002, ...) e, como no aplicativo, só desempatam pontuações iguais.
+
+| Demonstração | Como fazer no painel | Resultado esperado |
+|---|---|---|
+| Eleição inicial | Adicionar nós Fraco, Médio e Forte | O de maior pontuação vira coordenador em cerca de 6 s |
+| Falha do coordenador | "Derrubar" no coordenador | O LWT marca o nó como offline e outro assume em cerca de 15 s |
+| Estabilidade | Adicionar um nó pouco melhor que o líder (menos de 10 pontos) | Ele entra como seguidor e não toma a liderança |
+| Histerese | Subir o nível de um seguidor até passar 10 pontos do líder e "Aplicar" | O líder abre a eleição e passa a liderança em cerca de 10 s |
+| Bateria baixa | Baixar a bateria do coordenador para menos de 15% e "Aplicar" | Ele fica inelegível e outro nó assume |
+| Reconexão | "Reconectar" um nó derrubado | Ele volta como seguidor, sem nova eleição |
+
+Para o cenário de dois coordenadores simultâneos (split-brain), que exige um nó com comportamento incorreto de propósito, use `tools/no_simulado.py` (veja as opções com `python tools/no_simulado.py --help`).
 
 ---
 
@@ -612,8 +721,8 @@ O fluxo geral de comunicação é:
 
 | Tópico | Finalidade |
 |---|---|
-| `rescuenet/teams/{team_id}/location` | Publicação de localização |
-| `rescuenet/teams/{team_id}/election` | Comunicação do protocolo de eleição |
+| `rescuenet/teams/{team_id}/location` | Publicação de localização (automática a cada ~10 s, ou pelo botão de envio imediato) |
+| `rescuenet/teams/{team_id}/election` | Protocolo de eleição (HELLO, ELECTION, OK, COORDINATOR, HEARTBEAT); o backend registra COORDINATOR e HEARTBEAT para saber o líder atual |
 | `rescuenet/teams/{team_id}/nodes/{node_id}/presence` | Estado de presença individual do nó |
 
 ---
