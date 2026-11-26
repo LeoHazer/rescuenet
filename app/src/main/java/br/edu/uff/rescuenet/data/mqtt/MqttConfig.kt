@@ -3,11 +3,12 @@ package br.edu.uff.rescuenet.data.mqtt
 
 object MqttConfig {
 
-    // Endereço utilizado pelo emulador Android
-    // para acessar o computador por meio do ADB Reverse.
-    const val BROKER_HOST = "127.0.0.1"
+    // Endereço inicial do broker, editável na tela do aplicativo.
+    // 127.0.0.1 funciona com ADB Reverse (cabo USB ou emulador). Pela rede
+    // Wi-Fi, informe o IP do computador que executa o broker.
+    const val DEFAULT_BROKER_HOST = "127.0.0.1"
 
-    const val BROKER_PORT = 1883
+    const val DEFAULT_BROKER_PORT = 1883
 
     const val KEEP_ALIVE_SECONDS = 30
 

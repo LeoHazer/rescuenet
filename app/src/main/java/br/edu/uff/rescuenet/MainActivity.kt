@@ -2,13 +2,22 @@ package br.edu.uff.rescuenet
 
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 
+import android.os.Build
 import android.os.Bundle
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -42,6 +51,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModelProvider
+import br.edu.uff.rescuenet.data.election.ElectionRole
 import br.edu.uff.rescuenet.presentation.viewmodel.RescueNetViewModel
 import br.edu.uff.rescuenet.ui.theme.RescueNetTheme
 
@@ -87,6 +97,40 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
 
     LaunchedEffect(context, viewModel) {
         viewModel.refreshBatteryLevel(context)
+        viewModel.loadBrokerAddress(context)
+
+        // Com a permissão já concedida, o GPS liga sozinho ao abrir a tela.
+        // Sem ela, o usuário segue pelo botão "Ativar localização".
+        if (hasLocationPermission(context)) {
+            viewModel.autoStartLocationTracking(context)
+        }
+    }
+
+    // A partir do Android 17 (API 37), acessar a rede local (o IP do
+    // computador com o broker) exige a permissão ACCESS_LOCAL_NETWORK.
+    // Mesmo se negada, a tentativa segue e o erro aparece na tela.
+    val localNetworkPermissionLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { _ ->
+            viewModel.connectMqtt(context)
+        }
+
+    fun connectToBroker() {
+        val needsLocalNetworkPermission =
+            Build.VERSION.SDK_INT >= 37 &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.ACCESS_LOCAL_NETWORK
+                ) != PackageManager.PERMISSION_GRANTED
+
+        if (needsLocalNetworkPermission) {
+            localNetworkPermissionLauncher.launch(
+                Manifest.permission.ACCESS_LOCAL_NETWORK
+            )
+        } else {
+            viewModel.connectMqtt(context)
+        }
     }
 
     val locationPermissionLauncher =
@@ -106,25 +150,20 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
         }
 
     fun requestLocationPermission() {
-        val fineGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        val coarseGranted = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_COARSE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (fineGranted || coarseGranted) {
+        if (hasLocationPermission(context)) {
             viewModel.startLocationTracking(context)
         } else {
-            locationPermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-            )
+            // Android 13+: a notificação do serviço de localização (que mantém
+            // o envio com a tela bloqueada) só aparece com POST_NOTIFICATIONS.
+            val permissions = buildList {
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.ACCESS_COARSE_LOCATION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    add(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+
+            locationPermissionLauncher.launch(permissions.toTypedArray())
         }
     }
 
@@ -247,6 +286,16 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                         color = MainTextColor
                     )
 
+                    Text(
+                        text = autoPublishLabel(
+                            lastPublishedAt = uiState.lastAutoLocationPublishedAt,
+                            connected = uiState.mqttConnected,
+                            hasPosition = uiState.latitude != null
+                        ),
+                        fontSize = 11.sp,
+                        color = SecondaryTextColor
+                    )
+
                     Button(
                         onClick = { requestLocationPermission() },
                         modifier = Modifier
@@ -341,25 +390,61 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                         )
                     }
 
-                    Button(
-                        onClick = { viewModel.connectMqtt(context) },
-                        enabled = !uiState.mqttConnecting &&
-                                !uiState.mqttConnected,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = RescueBlue
-                        )
-                    ) {
-                        Text(
-                            text = if (uiState.mqttConnecting) {
-                                "Conectando..."
-                            } else {
-                                "Conectar ao broker"
-                            }
-                        )
+                    val brokerBusy = uiState.mqttConnecting || uiState.mqttConnected
+
+                    OutlinedTextField(
+                        value = uiState.brokerAddress,
+                        onValueChange = { viewModel.updateBrokerAddress(it) },
+                        label = { Text("Endereço do broker") },
+                        placeholder = { Text("192.168.0.10 ou 192.168.0.10:1883") },
+                        singleLine = true,
+                        enabled = !brokerBusy,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Uri,
+                            imeAction = ImeAction.Done
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Text(
+                        text = "Wi-Fi: IP do computador com o broker. Cabo USB ou emulador: 127.0.0.1.",
+                        fontSize = 11.sp,
+                        color = SecondaryTextColor
+                    )
+
+                    if (brokerBusy) {
+                        // Também cancela uma reconexão para um endereço errado.
+                        Button(
+                            onClick = { viewModel.disconnectMqtt() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = SecondaryTextColor
+                            )
+                        ) {
+                            Text(
+                                text = if (uiState.mqttConnected) {
+                                    "Desconectar"
+                                } else {
+                                    "Cancelar conexão"
+                                }
+                            )
+                        }
+                    } else {
+                        Button(
+                            onClick = { connectToBroker() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RescueBlue
+                            )
+                        ) {
+                            Text("Conectar ao broker")
+                        }
                     }
 
                     Button(
@@ -418,22 +503,41 @@ fun RescueNetScreen(viewModel: RescueNetViewModel) {
                 SectionTitle("Coordenação Inteligente")
 
                 InfoCard {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "Dispositivos descobertos",
-                            color = MainTextColor
-                        )
+                    ElectionInfoRow(
+                        label = "Este dispositivo",
+                        value = uiState.localNodeId?.let { shortNodeId(it) } ?: "—"
+                    )
 
-                        Text(
-                            text = "${uiState.discoveredNodeCount}",
-                            fontWeight = FontWeight.Bold,
-                            color = RescueBlue
-                        )
-                    }
+                    ElectionInfoRow(
+                        label = "Papel na eleição",
+                        value = electionRoleLabel(uiState.electionRole),
+                        valueColor = if (uiState.electionRole == ElectionRole.COORDINATOR) {
+                            OnlineGreen
+                        } else {
+                            RescueBlue
+                        }
+                    )
+
+                    ElectionInfoRow(
+                        label = "Coordenador atual",
+                        value = when (val coordinator = uiState.coordinatorNodeId) {
+                            null -> "Nenhum"
+                            uiState.localNodeId -> "Este dispositivo"
+                            else -> shortNodeId(coordinator)
+                        }
+                    )
+
+                    ElectionInfoRow(
+                        label = "Época",
+                        value = uiState.electionEpoch?.let {
+                            "${it.counter} (iniciada por ${shortNodeId(it.initiatorNodeId)})"
+                        } ?: "—"
+                    )
+
+                    ElectionInfoRow(
+                        label = "Dispositivos descobertos",
+                        value = "${uiState.discoveredNodeCount}"
+                    )
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -583,6 +687,82 @@ fun SectionTitle(title: String) {
         fontWeight = FontWeight.Bold,
         color = MainTextColor
     )
+}
+
+@Composable
+fun ElectionInfoRow(
+    label: String,
+    value: String,
+    valueColor: Color = RescueBlue
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = MainTextColor
+        )
+
+        Text(
+            text = value,
+            fontWeight = FontWeight.Bold,
+            color = valueColor
+        )
+    }
+}
+
+fun hasLocationPermission(context: Context): Boolean {
+    val fineGranted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+
+    val coarseGranted = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+
+    return fineGranted || coarseGranted
+}
+
+private val autoPublishTimeFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("HH:mm:ss")
+
+/** Linha discreta com o estado do envio automático da localização. */
+fun autoPublishLabel(
+    lastPublishedAt: Long?,
+    connected: Boolean,
+    hasPosition: Boolean
+): String {
+    val last = lastPublishedAt?.let {
+        Instant.ofEpochMilli(it)
+            .atZone(ZoneId.systemDefault())
+            .format(autoPublishTimeFormat)
+    }
+
+    return when {
+        !connected && last != null -> "Envio automático pausado (sem conexão). Último às $last"
+        !connected -> "Envio automático: aguardando conexão com o broker"
+        !hasPosition -> "Envio automático: aguardando posição do GPS"
+        last != null -> "Envio automático a cada 10 s. Último às $last"
+        else -> "Envio automático a cada 10 s"
+    }
+}
+
+/** Mesmo formato curto usado no dashboard: os 6 últimos dígitos. */
+fun shortNodeId(nodeId: Long): String {
+    val text = nodeId.toString()
+    return if (text.length <= 6) text else "…" + text.takeLast(6)
+}
+
+fun electionRoleLabel(role: ElectionRole?): String = when (role) {
+    ElectionRole.COORDINATOR -> "Coordenador"
+    ElectionRole.FOLLOWER -> "Seguidor"
+    ElectionRole.ELECTING -> "Em eleição"
+    ElectionRole.IDLE -> "Descobrindo nós"
+    null -> "Desconectado"
 }
 
 @Composable

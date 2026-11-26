@@ -10,13 +10,17 @@ import br.edu.uff.rescuenet.data.election.ElectionRole
 import android.content.Context
 import android.os.BatteryManager
 import android.app.ActivityManager
-import android.location.Location
+import br.edu.uff.rescuenet.data.location.AutoPublishThrottle
+import br.edu.uff.rescuenet.data.location.LocationForegroundService
+import br.edu.uff.rescuenet.data.location.LocationPayload
 import br.edu.uff.rescuenet.data.location.LocationTracker
 import br.edu.uff.rescuenet.data.election.AdaptiveBullyPolicy
 import br.edu.uff.rescuenet.data.election.ElectionEpoch
 import br.edu.uff.rescuenet.data.election.ElectionMetrics
 import br.edu.uff.rescuenet.data.election.HelloMessage
 import br.edu.uff.rescuenet.data.election.ElectionMessageCodec
+import br.edu.uff.rescuenet.data.mqtt.BrokerAddress
+import br.edu.uff.rescuenet.data.mqtt.BrokerSettings
 import br.edu.uff.rescuenet.data.mqtt.MqttConfig
 import br.edu.uff.rescuenet.data.mqtt.NodeIdentity
 import br.edu.uff.rescuenet.data.mqtt.MqttManager
@@ -24,7 +28,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import java.util.concurrent.ConcurrentHashMap
 
 data class RescueNetUiState(
     val operationalStatus: String = "Em operação",
@@ -37,10 +40,13 @@ data class RescueNetUiState(
     val locationMessage: String = "Aguardando autorização de localização",
     val locationTracking: Boolean = false,
     val batteryLevel: Int? = null,
+    // Horário (relógio do aparelho, em ms) do último envio automático aceito pelo broker.
+    val lastAutoLocationPublishedAt: Long? = null,
 
     //Os dados abaixo são mantidos
 
     val emergencyActivated: Boolean = false,
+    val brokerAddress: String = "",
     val mqttConnecting: Boolean = false,
     val mqttConnected: Boolean = false,
     val mqttMessage: String = "Desconectado",
@@ -48,7 +54,13 @@ data class RescueNetUiState(
     val lastPublishedMessage: String? = null,
     val lastElectionMessage: String? = null,
     val discoveredNodeCount: Int = 0,
-    val localElectionScore: Double? = null
+    val localElectionScore: Double? = null,
+
+    // Estado da eleição exibido na tela
+    val localNodeId: Long? = null,
+    val electionRole: ElectionRole? = null,
+    val coordinatorNodeId: Long? = null,
+    val electionEpoch: ElectionEpoch? = null
 )
 
 class RescueNetViewModel : ViewModel() {
@@ -65,9 +77,21 @@ class RescueNetViewModel : ViewModel() {
     private var initialElectionAtMillis = 0L
 
     private var electionSubscriptionRegistered = false
-    private val discoveredCandidates = ConcurrentHashMap<Long, HelloMessage>()
 
     private var locationTracker: LocationTracker? = null
+
+    // Contexto da aplicação usado para parar o serviço em primeiro plano;
+    // nulo quando o serviço não está ativo.
+    private var foregroundServiceContext: Context? = null
+
+    // Envio automático: no máximo uma posição a cada 10 s, a partir do
+    // callback do GPS (que entrega a cada ~5 s). Acessado só na main thread.
+    private val autoPublishThrottle = AutoPublishThrottle()
+
+    // O rastreamento liga sozinho uma única vez por ViewModel, para não
+    // religar após o usuário interromper (por exemplo, ao girar a tela).
+    private var locationAutoStartAttempted = false
+
     private val _uiState = MutableStateFlow(RescueNetUiState())
     val uiState: StateFlow<RescueNetUiState> = _uiState.asStateFlow()
 
@@ -97,13 +121,22 @@ class RescueNetViewModel : ViewModel() {
             return
         }
 
-        val tracker = LocationTracker(context.applicationContext)
+        val appContext = context.applicationContext
+        val tracker = LocationTracker(appContext)
         locationTracker = tracker
+
+        // Mantém o GPS entregando posições com a tela bloqueada.
+        val serviceError = LocationForegroundService.start(appContext)
+        foregroundServiceContext = appContext.takeIf { serviceError == null }
 
         _uiState.update {
             it.copy(
                 locationTracking = true,
-                locationMessage = "Buscando localização..."
+                locationMessage = if (serviceError == null) {
+                    "Buscando localização..."
+                } else {
+                    "Buscando localização (sem serviço em segundo plano: $serviceError)"
+                }
             )
         }
 
@@ -118,10 +151,13 @@ class RescueNetViewModel : ViewModel() {
                         locationMessage = "Localização atualizada"
                     )
                 }
+
+                maybeAutoPublishLocation(appContext)
             },
             onError = { exception ->
                 tracker.stopLocationUpdates()
                 locationTracker = null
+                stopForegroundLocationService()
 
                 _uiState.update {
                     it.copy(
@@ -136,9 +172,39 @@ class RescueNetViewModel : ViewModel() {
 
 
 
+    /**
+     * Liga o rastreamento ao abrir a tela, se a permissão já foi concedida
+     * (a verificação fica na Activity). Só tenta uma vez por ViewModel.
+     */
+    fun autoStartLocationTracking(context: Context) {
+        if (locationAutoStartAttempted) return
+
+        locationAutoStartAttempted = true
+        startLocationTracking(context)
+    }
+
+    /**
+     * Chamado a cada posição do GPS (main thread). Publica se houver conexão
+     * e o intervalo do envio automático já tiver passado.
+     */
+    private fun maybeAutoPublishLocation(context: Context) {
+        val state = _uiState.value
+
+        if (!state.mqttConnected || state.latitude == null) return
+        if (!autoPublishThrottle.tryAcquire(SystemClock.elapsedRealtime())) return
+
+        publishLocation(context, automatic = true)
+    }
+
+    private fun stopForegroundLocationService() {
+        foregroundServiceContext?.let { LocationForegroundService.stop(it) }
+        foregroundServiceContext = null
+    }
+
     fun stopLocationTracking() {
         locationTracker?.stopLocationUpdates()
         locationTracker = null
+        stopForegroundLocationService()
 
         _uiState.update {
             it.copy(
@@ -284,19 +350,20 @@ class RescueNetViewModel : ViewModel() {
                 }
 
                 val now = SystemClock.elapsedRealtime()
+                val isNewcomer = message is HelloMessage &&
+                    !machine.isKnownCandidate(message.nodeId)
                 val responses = machine.receive(message, now)
 
                 if (message is HelloMessage) {
-                    discoveredCandidates[message.nodeId] = message
-
                     _uiState.update {
-                        it.copy(
-                            lastElectionMessage = payload,
-                            discoveredNodeCount = discoveredCandidates.size
-                        )
+                        it.copy(lastElectionMessage = payload)
                     }
 
                     if (machine.role == ElectionRole.COORDINATOR) {
+                        if (isNewcomer) {
+                            announceToNewcomer(machine, now)
+                        }
+
                         publishElectionMessages(
                             machine.evaluateCoordinatorChallenge(message.nodeId, now)
                         )
@@ -304,6 +371,7 @@ class RescueNetViewModel : ViewModel() {
                 }
 
                 publishElectionMessages(responses)
+                syncElectionState()
             } catch (error: Exception) {
                 _uiState.update {
                     it.copy(
@@ -311,6 +379,38 @@ class RescueNetViewModel : ViewModel() {
                     )
                 }
             }
+        }
+    }
+
+    /**
+     * Um nó acabou de aparecer. O coordenador reenvia HELLO e HEARTBEAT na
+     * hora, para que o recém-chegado o reconheça dentro da janela de
+     * descoberta em vez de iniciar uma eleição própria.
+     */
+    private fun announceToNewcomer(machine: AdaptiveBullyElection, now: Long) {
+        val context = electionContext ?: return
+        val teamId = electionTeamId ?: return
+        val nodeId = electionNodeId ?: return
+
+        publishHello(context, teamId, nodeId)
+        lastHelloAtMillis = now
+
+        machine.createHeartbeat(now)?.let {
+            publishElectionMessages(listOf(it))
+            lastHeartbeatAtMillis = now
+        }
+    }
+
+    private fun syncElectionState() {
+        val machine = electionMachine
+
+        _uiState.update {
+            it.copy(
+                electionRole = machine?.role,
+                coordinatorNodeId = machine?.coordinatorNodeId,
+                electionEpoch = machine?.currentEpoch,
+                discoveredNodeCount = machine?.knownCandidateCount ?: 0
+            )
         }
     }
 
@@ -328,11 +428,7 @@ class RescueNetViewModel : ViewModel() {
                 localNodeId = nodeId
             )
 
-            discoveredCandidates.clear()
-
-            _uiState.update {
-                it.copy(discoveredNodeCount = 0)
-            }
+            syncElectionState()
 
             publishHello(context.applicationContext, teamId, nodeId)
 
@@ -374,7 +470,8 @@ class RescueNetViewModel : ViewModel() {
 
                 if (initialElectionAtMillis > 0L && now >= initialElectionAtMillis) {
                     initialElectionAtMillis = 0L
-                    publishElectionMessages(machine.beginElection(now))
+                    // Só elege se nenhum coordenador foi reconhecido na janela.
+                    publishElectionMessages(machine.startInitialElection(now))
                 }
 
                 publishElectionMessages(machine.onElectionTimeout(now))
@@ -389,6 +486,7 @@ class RescueNetViewModel : ViewModel() {
                     lastHeartbeatAtMillis = now
                 }
 
+                syncElectionState()
                 electionHandler.postDelayed(this, 1000L)
             }
         }
@@ -401,6 +499,42 @@ class RescueNetViewModel : ViewModel() {
         electionTask?.let { electionHandler.removeCallbacks(it) }
         electionTask = null
     }
+    /** Carrega o último endereço de broker salvo no aparelho. */
+    fun loadBrokerAddress(context: Context) {
+        if (_uiState.value.brokerAddress.isNotEmpty()) return
+
+        val saved = BrokerSettings.load(context)
+        _uiState.update { it.copy(brokerAddress = saved) }
+    }
+
+    fun updateBrokerAddress(address: String) {
+        _uiState.update { it.copy(brokerAddress = address) }
+    }
+
+    /**
+     * Encerra a conexão por iniciativa do usuário (também cancela uma
+     * reconexão em andamento, como a de um endereço digitado errado).
+     * O broker publica a presença "offline" (LWT).
+     */
+    fun disconnectMqtt() {
+        electionHandler.post {
+            stopElectionScheduler()
+            electionMachine = null
+            syncElectionState()
+        }
+
+        mqttManager.disconnect()
+
+        _uiState.update {
+            it.copy(
+                mqttConnecting = false,
+                mqttConnected = false,
+                mqttMessage = "Desconectado",
+                mqttError = null
+            )
+        }
+    }
+
     fun connectMqtt(context: Context) {
         val currentState = _uiState.value
 
@@ -408,20 +542,35 @@ class RescueNetViewModel : ViewModel() {
             return
         }
 
+        val broker = BrokerAddress.parse(currentState.brokerAddress)
+
+        if (broker == null) {
+            _uiState.update {
+                it.copy(
+                    mqttError = "Endereço do broker inválido. Use, por exemplo, 192.168.0.10 ou 192.168.0.10:1883."
+                )
+            }
+            return
+        }
+
+        BrokerSettings.save(context, broker)
+
         val nodeId = NodeIdentity.getNodeId(context)
         val teamId = MqttConfig.TEAM_ID
 
         _uiState.update {
             it.copy(
+                localNodeId = nodeId,
+                brokerAddress = broker.toString(),
                 mqttConnecting = true,
                 mqttError = null,
-                mqttMessage = "Conectando ao broker..."
+                mqttMessage = "Conectando a $broker..."
             )
         }
 
         mqttManager.connect(
-            host = MqttConfig.BROKER_HOST,
-            port = MqttConfig.BROKER_PORT,
+            host = broker.host,
+            port = broker.port,
             clientId = MqttConfig.nodeClientId(nodeId),
             teamId = teamId,
             nodeId = nodeId,
@@ -430,7 +579,7 @@ class RescueNetViewModel : ViewModel() {
                     it.copy(
                         mqttConnecting = false,
                         mqttConnected = true,
-                        mqttMessage = "Conectado ao broker",
+                        mqttMessage = "Conectado ao broker $broker",
                         mqttError = null
                     )
                 }
@@ -451,7 +600,7 @@ class RescueNetViewModel : ViewModel() {
                         it.copy(
                             mqttConnecting = false,
                             mqttConnected = true,
-                            mqttMessage = "Conectado ao broker",
+                            mqttMessage = "Conectado ao broker $broker",
                             mqttError = null
                         )
                     }
@@ -496,17 +645,24 @@ class RescueNetViewModel : ViewModel() {
                             }
                         }
                     )
+
+                    // Ao (re)conectar, a posição já conhecida sai sem esperar o intervalo.
+                    electionHandler.post {
+                        autoPublishThrottle.reset()
+                        maybeAutoPublishLocation(context.applicationContext)
+                    }
                 } else {
                     electionHandler.post {
                         stopElectionScheduler()
                         electionMachine = null
+                        syncElectionState()
                     }
 
                     _uiState.update {
                         it.copy(
                             mqttConnecting = true,
                             mqttConnected = false,
-                            mqttMessage = "Conexão perdida. Tentando reconectar...",
+                            mqttMessage = "Sem conexão com $broker. Tentando reconectar...",
                             mqttError = error?.message
                                 ?: "Aguardando reconexão com o broker."
                         )
@@ -540,18 +696,15 @@ class RescueNetViewModel : ViewModel() {
             it.copy(batteryLevel = batteryLevel)
         }
 
-        val timestamp = System.currentTimeMillis() / 1000
-
-        val payload = """
-            {
-                "team_id": ${MqttConfig.TEAM_ID},
-                "latitude": -22.526,
-                "longitude": -41.945,
-                "accuracy": 8.5,
-                "battery": $batteryLevel,
-                "timestamp": $timestamp
-            }
-        """.trimIndent()
+        val payload = LocationPayload.encode(
+            teamId = MqttConfig.TEAM_ID,
+            nodeId = NodeIdentity.getNodeId(context),
+            latitude = -22.526,
+            longitude = -41.945,
+            accuracy = 8.5f,
+            battery = batteryLevel,
+            timestampSeconds = System.currentTimeMillis() / 1000
+        )
 
         mqttManager.publish(
             topic = MqttConfig.LOCATION_TOPIC,
@@ -576,12 +729,24 @@ class RescueNetViewModel : ViewModel() {
         )
     }
 
+    /** Envio imediato, pelo botão "Enviar localização GPS real". */
     fun publishCurrentLocation(context: Context) {
+        publishLocation(context, automatic = false)
+    }
+
+    /**
+     * Publica a posição GPS atual. No envio automático, falhas de pré-condição
+     * são silenciosas (o próximo callback do GPS tenta de novo) e o sucesso
+     * não sobrescreve as mensagens de estado da conexão.
+     */
+    private fun publishLocation(context: Context, automatic: Boolean) {
         val currentState = _uiState.value
 
         if (!currentState.mqttConnected) {
-            _uiState.update {
-                it.copy(mqttError = "Conecte-se ao broker antes de publicar.")
+            if (!automatic) {
+                _uiState.update {
+                    it.copy(mqttError = "Conecte-se ao broker antes de publicar.")
+                }
             }
             return
         }
@@ -591,8 +756,10 @@ class RescueNetViewModel : ViewModel() {
         val accuracy = currentState.locationAccuracy
 
         if (latitude == null || longitude == null || accuracy == null) {
-            _uiState.update {
-                it.copy(mqttError = "Localização GPS ainda não disponível.")
+            if (!automatic) {
+                _uiState.update {
+                    it.copy(mqttError = "Localização GPS ainda não disponível.")
+                }
             }
             return
         }
@@ -613,37 +780,47 @@ class RescueNetViewModel : ViewModel() {
             it.copy(batteryLevel = batteryLevel)
         }
 
-        val timestamp = System.currentTimeMillis() / 1000
-
-        val payload = """
-            {
-                "team_id": ${MqttConfig.TEAM_ID},
-                "latitude": $latitude,
-                "longitude": $longitude,
-                "accuracy": $accuracy,
-                "battery": $batteryLevel,
-                "timestamp": $timestamp
-            }
-        """.trimIndent()
+        val payload = LocationPayload.encode(
+            teamId = MqttConfig.TEAM_ID,
+            nodeId = NodeIdentity.getNodeId(context),
+            latitude = latitude,
+            longitude = longitude,
+            accuracy = accuracy,
+            battery = batteryLevel,
+            timestampSeconds = System.currentTimeMillis() / 1000
+        )
 
         mqttManager.publish(
             topic = MqttConfig.LOCATION_TOPIC,
             payload = payload,
             onSuccess = {
                 _uiState.update {
-                    it.copy(
-                        mqttMessage = "Localização GPS real publicada",
-                        mqttError = null,
-                        lastPublishedMessage = payload
-                    )
+                    if (automatic) {
+                        it.copy(
+                            lastAutoLocationPublishedAt = System.currentTimeMillis(),
+                            lastPublishedMessage = payload
+                        )
+                    } else {
+                        it.copy(
+                            mqttMessage = "Localização GPS real publicada",
+                            mqttError = null,
+                            lastPublishedMessage = payload
+                        )
+                    }
                 }
             },
             onError = { error ->
                 _uiState.update {
-                    it.copy(
-                        mqttMessage = "Falha ao publicar localização GPS",
-                        mqttError = error.message ?: "Erro desconhecido"
-                    )
+                    if (automatic) {
+                        it.copy(
+                            mqttError = "Falha no envio automático da localização: ${error.message ?: "Erro desconhecido"}"
+                        )
+                    } else {
+                        it.copy(
+                            mqttMessage = "Falha ao publicar localização GPS",
+                            mqttError = error.message ?: "Erro desconhecido"
+                        )
+                    }
                 }
             }
         )

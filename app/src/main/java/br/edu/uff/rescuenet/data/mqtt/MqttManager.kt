@@ -3,9 +3,11 @@ package br.edu.uff.rescuenet.data.mqtt
 
 import com.hivemq.client.mqtt.MqttGlobalPublishFilter
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import com.hivemq.client.mqtt.datatypes.MqttQos
 import com.hivemq.client.mqtt.mqtt5.Mqtt5AsyncClient
 import com.hivemq.client.mqtt.mqtt5.Mqtt5Client
+import com.hivemq.client.mqtt.mqtt5.message.disconnect.Mqtt5DisconnectReasonCode
 
 import java.nio.charset.StandardCharsets
 
@@ -16,7 +18,15 @@ class MqttManager {
         val onError: (Throwable) -> Unit
     )
 
+    @Volatile
     private var client: Mqtt5AsyncClient? = null
+
+    /**
+     * Identifica a conexão corrente. Um cliente de geração antiga (após
+     * desconectar ou trocar de broker) deixa de reconectar e não notifica
+     * mais a interface.
+     */
+    private val generation = AtomicInteger(0)
 
     private val subscriptions =
         ConcurrentHashMap<String, RegisteredSubscription>()
@@ -36,29 +46,45 @@ class MqttManager {
         onConnectionStateChanged: (Boolean, Throwable?) -> Unit = { _, _ -> }
     ) {
         try {
+            val myGeneration = generation.incrementAndGet()
+            client?.let { previous -> closeQuietly(previous) }
+
+            lateinit var self: Mqtt5AsyncClient
+
             val mqttClient = Mqtt5Client.builder()
                 .identifier(clientId)
                 .serverHost(host)
                 .serverPort(port)
                 .automaticReconnectWithDefaultConfig()
                 .addConnectedListener {
+                    if (generation.get() != myGeneration) {
+                        // Conectou depois de ter sido abandonado: encerra.
+                        closeQuietly(self)
+                        return@addConnectedListener
+                    }
+
                     onConnectionStateChanged(true, null)
 
-                    client?.let { activeClient ->
-                        subscriptions.forEach { (topic, subscription) ->
-                            subscribeOnClient(
-                                activeClient,
-                                topic,
-                                {},
-                                subscription.onError
-                            )
-                        }
+                    subscriptions.forEach { (topic, subscription) ->
+                        subscribeOnClient(
+                            self,
+                            topic,
+                            {},
+                            subscription.onError
+                        )
                     }
                 }
                 .addDisconnectedListener { context ->
+                    if (generation.get() != myGeneration) {
+                        context.reconnector.reconnect(false)
+                        return@addDisconnectedListener
+                    }
+
                     onConnectionStateChanged(false, context.cause)
                 }
                 .buildAsync()
+
+            self = mqttClient
 
             client = mqttClient
 
@@ -91,6 +117,8 @@ class MqttManager {
                 .keepAlive(MqttConfig.KEEP_ALIVE_SECONDS)
                 .send()
                 .whenComplete { _, throwable ->
+                    if (generation.get() != myGeneration) return@whenComplete
+
                     if (throwable != null) {
                         onError(throwable)
                     } else {
@@ -100,6 +128,22 @@ class MqttManager {
 
         } catch (exception: Exception) {
             onError(exception)
+        }
+    }
+
+    /**
+     * Encerra um cliente sem notificar a interface. Se ele estiver em
+     * reconexão, o listener de desconexão interrompe as novas tentativas.
+     */
+    private fun closeQuietly(target: Mqtt5AsyncClient) {
+        try {
+            if (target.state.isConnected) {
+                target.disconnectWith()
+                    .reasonCode(Mqtt5DisconnectReasonCode.DISCONNECT_WITH_WILL_MESSAGE)
+                    .send()
+            }
+        } catch (_: Exception) {
+            // Cliente já encerrado.
         }
     }
 
@@ -211,16 +255,24 @@ class MqttManager {
     ) {
         val mqttClient = client
 
-        if (mqttClient == null) {
+        // Invalida a conexão corrente: se ela estiver em reconexão (por
+        // exemplo, com um endereço errado), as tentativas param.
+        generation.incrementAndGet()
+        client = null
+
+        if (mqttClient == null || !mqttClient.state.isConnected) {
             onComplete()
             return
         }
 
         try {
-            mqttClient.disconnect()
+            // Um DISCONNECT normal descarta o LWT e deixaria a presença
+            // retida como "online". Com este código de motivo, o broker
+            // publica a mensagem "offline" mesmo no encerramento voluntário.
+            mqttClient.disconnectWith()
+                .reasonCode(Mqtt5DisconnectReasonCode.DISCONNECT_WITH_WILL_MESSAGE)
+                .send()
                 .whenComplete { _, throwable ->
-                    client = null
-
                     if (throwable != null) {
                         onError(throwable)
                     } else {
@@ -229,7 +281,6 @@ class MqttManager {
                 }
 
         } catch (exception: Exception) {
-            client = null
             onError(exception)
         }
     }
